@@ -106,8 +106,14 @@ pub struct AiReviewCandidateContext {
     pub counted_referrer_count: Option<usize>,
     /// Local declarations moving with the candidate.
     pub local_dependency_names: Vec<String>,
-    /// Import strategy selected for each referrer.
+    /// Import strategy selected for each writable referrer.
     pub referrer_strategies: Vec<crate::model::ReferrerStrategy>,
+    /// Referrers counted by read-only analysis and excluded from rewriting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub readonly_referrers: Vec<crate::model::ReadOnlyReferrer>,
+    /// Analysis gaps that make rewriting this candidate unsafe.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analysis_limitations: Vec<crate::model::AnalysisLimitation>,
     /// Plan freshness fingerprint.
     pub source_fingerprint: String,
     /// Original source-context byte count.

@@ -119,7 +119,20 @@ fn render_referrers(candidate: &Candidate) -> String {
         || candidate.referrer_count.to_string(),
         |counted| format!("{counted} counted/{} total", candidate.referrer_count),
     );
-    format!("{count}:{}", candidate.referrer_paths.join(","))
+    let mut paths = candidate
+        .referrer_paths
+        .iter()
+        .map(String::as_str)
+        .chain(
+            candidate
+                .readonly_referrers
+                .iter()
+                .map(|referrer| referrer.path.as_str()),
+        )
+        .collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths.dedup();
+    format!("{count}:{}", paths.join(","))
 }
 
 fn render_import_strategies(candidate: &Candidate) -> String {
@@ -335,6 +348,8 @@ mod tests {
             local_dependency_names: vec![],
             local_dependency_declaration_keys: vec![],
             referrer_strategies: vec![],
+            readonly_referrers: vec![],
+            analysis_limitations: vec![],
             destination_index_path: None,
         };
         let output = render_scan_text(&[candidate("Later", "z"), candidate("First", "a")], false);
@@ -362,6 +377,8 @@ mod tests {
             local_dependency_names: vec![],
             local_dependency_declaration_keys: vec![],
             referrer_strategies: vec![],
+            readonly_referrers: vec![],
+            analysis_limitations: vec![],
             destination_index_path: None,
         };
         let diagnostics = [crate::model::ScanDiagnostic {
@@ -403,6 +420,8 @@ mod tests {
                     module_specifier: "./types/src".into(),
                 },
             }],
+            readonly_referrers: vec![],
+            analysis_limitations: vec![],
             destination_index_path: None,
         };
         let output = render_apply_dry_run(

@@ -8,12 +8,12 @@ use crate::{
         resolve_relative_module_with_options,
         resolve_scoped_path_alias_with_base_url_and_module_suffixes,
     },
-    parser::parse_source,
     path::normalize_project_path,
     source::{
-        discover_typescript_files_with_generated, filter_project_paths, path_is_included,
+        discover_analysis_files, filter_project_paths, path_is_included,
         read_typescript_source_text,
     },
+    vue::{self, SourceParse},
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -48,7 +48,7 @@ pub(super) fn load_tsconfig_source_files(
 ) -> Result<(Vec<(String, String)>, crate::config::ProjectConfig)> {
     let mut config = load_project_config(tsconfig_path)?;
     let root = config.project_root.clone();
-    let mut discovered = discover_typescript_files_with_generated(&root, include_generated)
+    let mut discovered = discover_analysis_files(&root, include_generated)
         .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?;
     let (explicit_packages, package_sources) =
         discover_explicit_package_sources(&root, config.files.as_deref(), include_generated)?;
@@ -146,9 +146,9 @@ fn discover_included_package_sources(
     let mut sources = BTreeSet::new();
     for package_root in package_roots {
         sources.extend(
-            discover_typescript_files_with_generated(&package_root, include_generated).map_err(
-                |error| TypeTuneError::new(format!("Could not discover sources: {error}")),
-            )?,
+            discover_analysis_files(&package_root, include_generated).map_err(|error| {
+                TypeTuneError::new(format!("Could not discover sources: {error}"))
+            })?,
         );
     }
     Ok(sources.into_iter().collect())
@@ -232,7 +232,7 @@ fn discover_explicit_package_sources(
                 Path::new(name)
                     .extension()
                     .and_then(|extension| extension.to_str()),
-                Some("ts" | "tsx")
+                Some("ts" | "tsx" | "vue")
             )
             || name.ends_with(".d.ts")
             || (!include_generated
@@ -240,7 +240,8 @@ fn discover_explicit_package_sources(
                     .iter()
                     .any(|segment| matches!(*segment, "generated" | "__generated__"))
                     || name.ends_with(".generated.ts")
-                    || name.ends_with(".generated.tsx")))
+                    || name.ends_with(".generated.tsx")
+                    || name.ends_with(".generated.vue")))
         {
             continue;
         }
@@ -264,7 +265,7 @@ fn discover_explicit_package_sources(
     }
     let mut sources = explicit.clone();
     for package_root in package_roots {
-        let files = discover_typescript_files_with_generated(&package_root, include_generated)
+        let files = discover_analysis_files(&package_root, include_generated)
             .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?;
         sources.extend(files);
     }
@@ -297,7 +298,9 @@ fn configured_source_paths(
     }
     let includes = match &config.include {
         Some(patterns) => patterns.clone(),
-        None if config.files.is_none() => vec!["**/*.ts".into(), "**/*.tsx".into()],
+        None if config.files.is_none() => {
+            vec!["**/*.ts".into(), "**/*.tsx".into(), "**/*.vue".into()]
+        }
         None => Vec::new(),
     };
     if !includes.is_empty() {
@@ -374,8 +377,11 @@ fn expand_imported_project_files(
         let Some(source) = read_project_source_text(path)? else {
             continue;
         };
-        let parsed = parse_source(&source)?;
-        for specifier in parsed.module_specifiers() {
+        let SourceParse::Analyzed(analyzed) = vue::parse_analysis_source(&source_path, &source)?
+        else {
+            continue;
+        };
+        for specifier in analyzed.parsed.module_specifiers() {
             let resolved = resolve_relative_module_with_options(
                 source_path.as_str(),
                 specifier,

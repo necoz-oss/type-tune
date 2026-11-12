@@ -125,8 +125,11 @@ import TextLink from "../../shared/ui/text-link.astro";
         does not rewrite.
       </p>
       <p>
-        A normal TypeScript failure rolls the file changes back. <code>--dry-run</code> performs
-        the same write and validation, then restores the files when that process finishes normally.
+        A move that would update a Vue script referrer, or that encounters a Vue file type-tune
+        could not analyze, is rejected before any file is written. <code>--dry-run</code> uses that
+        same gate. A normal TypeScript failure rolls the file changes back. <code>--dry-run</code>
+        performs the same write and validation, then restores the files when that process finishes
+        normally.
         Killing the process, or editing the same files at the same time, is outside that guarantee.
         If rollback itself fails, the CLI reports the failure instead of claiming the tree was
         restored.

@@ -42,6 +42,8 @@ mod tests {
             local_dependency_names: vec![],
             local_dependency_declaration_keys: vec![],
             referrer_strategies: vec![],
+            readonly_referrers: vec![],
+            analysis_limitations: vec![],
             destination_index_path: None,
         }
     }

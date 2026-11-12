@@ -56,12 +56,33 @@ fn discover_typescript_files_with_options(
     include_generated: bool,
     include_declaration_files: bool,
 ) -> std::io::Result<Vec<PathBuf>> {
+    discover_files(root, include_generated, include_declaration_files, false)
+}
+
+/// Recursively returns TypeScript sources and Vue single-file components for referrer analysis.
+///
+/// Vue files stay out of declaration scanning and rewrite discovery. Callers parse their script
+/// blocks separately.
+pub fn discover_analysis_files(
+    root: &Path,
+    include_generated: bool,
+) -> std::io::Result<Vec<PathBuf>> {
+    discover_files(root, include_generated, false, true)
+}
+
+fn discover_files(
+    root: &Path,
+    include_generated: bool,
+    include_declaration_files: bool,
+    include_vue: bool,
+) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     visit(
         root,
         &mut files,
         include_generated,
         include_declaration_files,
+        include_vue,
         &mut HashSet::new(),
     )?;
     files.sort();
@@ -163,6 +184,7 @@ fn visit(
     files: &mut Vec<PathBuf>,
     include_generated: bool,
     include_declaration_files: bool,
+    include_vue: bool,
     ancestors: &mut HashSet<PathBuf>,
 ) -> std::io::Result<()> {
     let real_directory = fs::canonicalize(directory)?;
@@ -174,6 +196,7 @@ fn visit(
         files,
         include_generated,
         include_declaration_files,
+        include_vue,
         ancestors,
     );
     ancestors.remove(&real_directory);
@@ -185,6 +208,7 @@ fn visit_entries(
     files: &mut Vec<PathBuf>,
     include_generated: bool,
     include_declaration_files: bool,
+    include_vue: bool,
     ancestors: &mut HashSet<PathBuf>,
 ) -> std::io::Result<()> {
     for entry in fs::read_dir(directory)? {
@@ -203,13 +227,11 @@ fn visit_entries(
                 files,
                 include_generated,
                 include_declaration_files,
+                include_vue,
                 ancestors,
             )?;
-        } else if matches!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("ts" | "tsx")
-        ) && (include_generated || !is_generated_source(&path))
-            && (include_declaration_files || !path.to_string_lossy().ends_with(".d.ts"))
+        } else if is_discovered_file(&path, include_declaration_files, include_vue)
+            && (include_generated || !is_generated_source(&path))
         {
             files.push(path);
         }
@@ -217,10 +239,24 @@ fn visit_entries(
     Ok(())
 }
 
+fn is_discovered_file(path: &Path, include_declaration_files: bool, include_vue: bool) -> bool {
+    match path.extension().and_then(|value| value.to_str()) {
+        Some("vue") => include_vue,
+        Some("ts" | "tsx") => {
+            include_declaration_files || !path.to_string_lossy().ends_with(".d.ts")
+        }
+        _ => false,
+    }
+}
+
 fn is_generated_source(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".generated.ts") || name.ends_with(".generated.tsx"))
+        .is_some_and(|name| {
+            name.ends_with(".generated.ts")
+                || name.ends_with(".generated.tsx")
+                || name.ends_with(".generated.vue")
+        })
 }
 
 #[cfg(test)]

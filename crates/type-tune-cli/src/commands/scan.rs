@@ -4,7 +4,7 @@ use std::{path::Path, process::ExitCode};
 
 use type_tune_core::{
     destination::PlacementStyle,
-    model::{Candidate, ScanDiagnostic},
+    model::{AnalysisLimitation, Candidate, ScanDiagnostic},
 };
 
 use crate::{
@@ -129,6 +129,7 @@ pub(crate) struct ScanCandidateOptions<'a> {
 pub(crate) struct ScanResult {
     pub(crate) candidates: Vec<Candidate>,
     pub(crate) diagnostics: Vec<ScanDiagnostic>,
+    pub(crate) analysis_limitations: Vec<AnalysisLimitation>,
 }
 
 /// Renders a scan result in the selected CLI output format.
@@ -139,15 +140,23 @@ pub(crate) fn render_scan_result(
     explain: bool,
 ) -> Result<String, String> {
     if format == "text" {
-        return Ok(type_tune_core::render::render_scan_text_with_diagnostics(
+        let mut output = type_tune_core::render::render_scan_text_with_diagnostics(
             &result.candidates,
             verbose,
             explain.then_some(result.diagnostics.as_slice()),
-        ));
+        );
+        if !explain && !result.analysis_limitations.is_empty() {
+            output.push_str("\nVue analysis limitations:\n");
+            for limitation in &result.analysis_limitations {
+                output.push_str(&format!("  - {}\n", limitation.message));
+            }
+        }
+        return Ok(output);
     }
     serde_json::to_string_pretty(&type_tune_core::model::ScanOutput {
         candidates: result.candidates,
         diagnostics: explain.then_some(result.diagnostics),
+        analysis_limitations: result.analysis_limitations,
     })
     .map(|output| format!("{output}\n"))
     .map_err(|error| format!("Could not serialize scan output: {error}"))
@@ -174,19 +183,28 @@ pub(crate) fn scan_candidates(
             },
         )
     };
-    let (candidates, unsupported_diagnostics) = if options.explain {
-        type_tune_core::scan::scan_tsconfig_with_generated_and_diagnostics(
-            Path::new(project),
-            options.include_generated,
-        )?
-    } else {
-        (
-            type_tune_core::scan::scan_tsconfig_with_generated(
+    let (candidates, unsupported_diagnostics, analysis_limitations) = if options.explain {
+        let (candidates, diagnostics) =
+            type_tune_core::scan::scan_tsconfig_with_generated_and_diagnostics(
                 Path::new(project),
                 options.include_generated,
-            )?,
-            Vec::new(),
-        )
+            )?;
+        let limitations = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.reason == "unresolvedVueSfc")
+            .map(|diagnostic| AnalysisLimitation {
+                path: diagnostic.source_path.clone(),
+                reason: diagnostic.reason.clone(),
+                message: diagnostic.message.clone(),
+            })
+            .collect::<Vec<_>>();
+        (candidates, diagnostics, limitations)
+    } else {
+        let scan = type_tune_core::scan::scan_tsconfig_project(
+            Path::new(project),
+            options.include_generated,
+        )?;
+        (scan.candidates, Vec::new(), scan.analysis_limitations)
     };
     let (mut candidates, mut diagnostics) = filter(candidates);
     if options.explain {
@@ -199,5 +217,6 @@ pub(crate) fn scan_candidates(
     Ok(ScanResult {
         candidates,
         diagnostics,
+        analysis_limitations,
     })
 }

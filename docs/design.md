@@ -46,7 +46,10 @@ tooling and is outside this architecture.
 `scan --project <tsconfig>` loads the project configuration, discovers TypeScript sources, parses
 them with tree-sitter, and resolves type-only relationships using the project configuration. It
 emits candidates as text or JSON. `--explain` also reports exported declarations intentionally
-omitted from the result.
+omitted from the result. Included `.vue` files are not parsed as TypeScript files. A dedicated
+extractor reads supported script blocks, preserves their original byte offsets, and feeds only
+that TypeScript into the existing import and usage analysis. Those referrers stay in a read-only
+list. Writable referrer strategies remain TypeScript-only.
 
 Candidates are limited to exported type aliases and interfaces. Generated files and declarations
 already in a `types` directory are excluded by default; callers can opt in with
@@ -89,7 +92,9 @@ The safety contract is deliberately conservative:
 - unknown, stale, duplicate, and destination-conflicting entries are rejected;
 - file paths must remain inside the chosen project;
 - the final TypeScript compiler validation runs before a transaction is retained;
-- dry runs leave the working tree unchanged.
+- dry runs leave the working tree unchanged;
+- a move that would update a Vue referrer, or that depends on a Vue file the scan could not
+  analyze, is rejected inside rewrite planning before any edit is applied.
 
 This is a source-aware refactoring tool, not a promise that every TypeScript construct can be moved
 automatically. Unsupported declaration shapes are excluded rather than guessed at.

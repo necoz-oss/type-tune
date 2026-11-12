@@ -178,6 +178,24 @@ pub fn render_plan_markdown(plan: &PlanFile) -> String {
                 render_strategy(&referrer.strategy)
             )
         }));
+        if !candidate.readonly_referrers.is_empty() {
+            lines.push("  - read-only referrers:".into());
+            lines.extend(candidate.readonly_referrers.iter().map(|referrer| {
+                format!(
+                    "    - `{}`: Vue script usage; rewriting is not supported",
+                    referrer.path
+                )
+            }));
+        }
+        if !candidate.analysis_limitations.is_empty() {
+            lines.push("  - analysis limitations:".into());
+            lines.extend(
+                candidate
+                    .analysis_limitations
+                    .iter()
+                    .map(|limitation| format!("    - {}", limitation.message)),
+            );
+        }
         if let Some(review) = &entry.ai_review {
             lines.extend([
                 format!(

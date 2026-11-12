@@ -204,6 +204,38 @@ pub fn parse_type_declarations(source: &str) -> Result<Vec<ParsedDeclaration>> {
 /// Returns an error when the TypeScript parser cannot be initialized.
 pub fn parse_source(source: &str) -> Result<ParsedSource> {
     let tree = parse_tree(source)?;
+    Ok(parsed_source_from_tree(&tree, source))
+}
+
+/// TypeScript dialect used for one embedded script.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeScriptDialect {
+    /// `.ts` script content.
+    TypeScript,
+    /// `.tsx` script content.
+    Tsx,
+}
+
+/// Parses source with one dialect and returns nothing when the tree contains syntax errors.
+///
+/// Vue script extraction uses this so an ambiguous or broken block is rejected instead of being
+/// repaired by the TypeScript-to-TSX fallback.
+///
+/// # Errors
+///
+/// Returns an error when the parser cannot be initialized.
+pub(crate) fn parse_exact_dialect(
+    source: &str,
+    dialect: TypeScriptDialect,
+) -> Result<Option<ParsedSource>> {
+    let tree = parse_tree_with_dialect(source, dialect)?;
+    if tree.root_node().has_error() {
+        return Ok(None);
+    }
+    Ok(Some(parsed_source_from_tree(&tree, source)))
+}
+
+fn parsed_source_from_tree(tree: &tree_sitter::Tree, source: &str) -> ParsedSource {
     let mut declarations = Vec::new();
     collect_declarations(
         tree.root_node(),
@@ -232,7 +264,7 @@ pub fn parse_source(source: &str) -> Result<ParsedSource> {
         source.as_bytes(),
         &mut unsupported_type_names,
     );
-    Ok(ParsedSource {
+    ParsedSource {
         declarations,
         import_analysis: ParsedImportAnalysis {
             imports,
@@ -241,7 +273,7 @@ pub fn parse_source(source: &str) -> Result<ParsedSource> {
         },
         re_exports,
         unsupported_type_names,
-    })
+    }
 }
 
 /// Returns whether `source` uses any of `type_names` outside import statements.
@@ -366,24 +398,27 @@ fn collect_import_usage(
 }
 
 fn parse_tree(source: &str) -> Result<tree_sitter::Tree> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-        .map_err(|error| {
-            TypeTuneError::new(format!("Could not initialize TypeScript parser: {error}"))
-        })?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| TypeTuneError::new("Could not parse TypeScript source."))?;
+    let tree = parse_tree_with_dialect(source, TypeScriptDialect::TypeScript)?;
     if !tree.root_node().has_error() {
         return Ok(tree);
     }
-    parser
-        .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
-        .map_err(|error| TypeTuneError::new(format!("Could not initialize TSX parser: {error}")))?;
+    parse_tree_with_dialect(source, TypeScriptDialect::Tsx)
+}
+
+fn parse_tree_with_dialect(source: &str, dialect: TypeScriptDialect) -> Result<tree_sitter::Tree> {
+    let mut parser = Parser::new();
+    let (language, label) = match dialect {
+        TypeScriptDialect::TypeScript => {
+            (tree_sitter_typescript::LANGUAGE_TYPESCRIPT, "TypeScript")
+        }
+        TypeScriptDialect::Tsx => (tree_sitter_typescript::LANGUAGE_TSX, "TSX"),
+    };
+    parser.set_language(&language.into()).map_err(|error| {
+        TypeTuneError::new(format!("Could not initialize {label} parser: {error}"))
+    })?;
     parser
         .parse(source, None)
-        .ok_or_else(|| TypeTuneError::new("Could not parse TSX source."))
+        .ok_or_else(|| TypeTuneError::new(format!("Could not parse {label} source.")))
 }
 
 fn first_string_child(node: Node<'_>) -> Option<Node<'_>> {
