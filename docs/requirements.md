@@ -13,6 +13,10 @@ project—without deciding on the developer's behalf that every shared type shou
 
 - One TypeScript project selected with `--project <tsconfig>`.
 - TypeScript and TSX source files included by that project configuration.
+- Vue single-file components included by that same configuration, for read-only referrer
+  discovery only. Supported blocks are `<script lang="ts">`, `<script setup lang="ts">`,
+  `<script lang="tsx">`, and `<script setup lang="tsx">`. Templates, styles, and other SFC
+  content are not analyzed as TypeScript.
 - Exported `type` aliases and `interface` declarations.
 - Existing relative module specifiers, configured path aliases, and simple barrel exports when their
   relationships can be resolved safely.
@@ -34,6 +38,21 @@ Use `--include-generated` or `--include-existing-types` when the caller wants th
 `--include type,interface`, `--ignore-file`, and `--referrer-count-exclude` let a caller narrow the
 candidate set. `scan --explain` must make omitted exported declarations understandable rather than
 silently disappearing from the report.
+
+A used type import inside a supported Vue script block counts as one referrer file, including
+`defineProps<T>()` and `defineEmits<T>()` type arguments. Unused imports do not count. Relative
+specifiers and configured TypeScript aliases resolve with the same rules as `.ts` files. The count
+is deterministic and unique per file. These Vue paths are reported as read-only referrers. They do
+not receive an import rewrite strategy.
+
+If a selected `.vue` file cannot be parsed reliably — for example an unclosed script, a script
+without `lang="ts"` or `lang="tsx"`, an external `src` script, or a script with syntax errors —
+scan reports that limitation. The file is not treated as proof that nothing references the type.
+The limitation is project-wide: it is attached to every candidate and also reported once at the
+top level. JSON uses `analysisLimitations` and omits that field when the list is empty. Saved scan
+JSON that still uses `analysis_limitations` can be read. `scan` and `scan --explain` report the
+same limitations in text and JSON. One unresolved Vue file rejects every move from that scan.
+Limiting the gate to candidates that file could affect is future work.
 
 ## Plan and review requirements
 
@@ -64,7 +83,9 @@ For accepted entries, the rewrite must:
 - move the chosen declaration and safe same-file type dependencies;
 - update type-only imports using the resolved relative, alias, or barrel strategy;
 - retain type-only compatibility re-exports when required to preserve unresolved star-barrel,
-  external-package, or Vue SFC imports;
+  external-package, or unscanned non-TypeScript imports;
+- reject the move before writing files when a counted Vue referrer would need an import update,
+  or when any selected Vue file could not be analyzed. Vue import rewriting is not supported yet.
 - validate the resulting project with TypeScript;
 - restore every touched file when validation or the transaction fails.
 

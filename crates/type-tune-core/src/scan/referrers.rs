@@ -6,7 +6,10 @@ use super::{
 };
 use crate::{
     Result,
-    model::{Candidate, ImportStrategy, ReferrerStrategy},
+    model::{
+        ANALYSIS_LIMITATION_UNRESOLVED_VUE, AnalysisLimitation, Candidate, ImportStrategy,
+        READONLY_REFERRER_VUE_SFC, ReadOnlyReferrer, ReferrerStrategy,
+    },
     module_path::{
         PackageAliasScopes, is_configured_path_alias,
         resolve_alias_module_specifier_with_known_paths, resolve_relative_module_with_options,
@@ -16,9 +19,10 @@ use crate::{
         is_relative_module_specifier, preserved_module_specifier_extension,
         relative_module_specifier, relative_module_specifier_with_extension,
     },
-    parser::ParsedSource,
+    source_role::SourceRole,
+    vue::AnalyzedSource,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 enum ReferrerImportStyle {
@@ -36,7 +40,7 @@ enum ReferrerImportStyle {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn scan_parsed_project_files_with_aliases(
-    parsed_files: Vec<(String, ParsedSource)>,
+    parsed_files: Vec<AnalyzedSource>,
     base_url: Option<&str>,
     path_aliases: &BTreeMap<String, Vec<String>>,
     package_aliases: &PackageAliasScopes,
@@ -45,15 +49,21 @@ pub(super) fn scan_parsed_project_files_with_aliases(
     include_unsupported: bool,
     preserve_path_aliases: bool,
     default_module_specifier_extension: &str,
+    limitations: &[AnalysisLimitation],
 ) -> Result<Vec<Candidate>> {
     let known_paths = parsed_files
         .iter()
-        .map(|(path, _)| path.clone())
+        .map(|file| file.path.clone())
         .collect::<HashSet<_>>();
+    let writable_files = parsed_files
+        .iter()
+        .filter(|file| file.role == SourceRole::WritableTypeScript)
+        .map(|file| (file.path.clone(), file.parsed.clone()))
+        .collect::<Vec<_>>();
     let mut candidates =
-        scan_parsed_declarations_with_unsupported(&parsed_files, include_unsupported);
+        scan_parsed_declarations_with_unsupported(&writable_files, include_unsupported);
     let barrel_exports = resolve_barrel_exports(
-        &parsed_files,
+        &writable_files,
         base_url,
         path_aliases,
         package_aliases,
@@ -62,7 +72,9 @@ pub(super) fn scan_parsed_project_files_with_aliases(
         &known_paths,
     )?;
     let mut referrer_styles = HashMap::new();
-    for (referrer_path, parsed_source) in &parsed_files {
+    for file in &parsed_files {
+        let referrer_path = &file.path;
+        let parsed_source = &file.parsed;
         let imports = &parsed_source.import_analysis.imports;
         let inline_type_imports = &parsed_source.import_analysis.inline_type_imports;
         let import_usage = &parsed_source.import_analysis.usage;
@@ -119,6 +131,13 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                     .collect::<Vec<_>>();
                 let barrel_import = !matching_barrel_exports.is_empty();
                 if (direct_import || barrel_import) && referrer_path != &candidate.source_path {
+                    if file.role == SourceRole::ReadOnlyVue {
+                        candidate.readonly_referrers.push(ReadOnlyReferrer {
+                            path: referrer_path.clone(),
+                            reason: READONLY_REFERRER_VUE_SFC.to_owned(),
+                        });
+                        continue;
+                    }
                     candidate.referrer_paths.push(referrer_path.clone());
                     let style = if let Some(export) =
                         matching_barrel_exports.iter().find(|export| {
@@ -206,6 +225,13 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                 if !(direct_import || barrel_import) || referrer_path == &candidate.source_path {
                     continue;
                 }
+                if file.role == SourceRole::ReadOnlyVue {
+                    candidate.readonly_referrers.push(ReadOnlyReferrer {
+                        path: referrer_path.clone(),
+                        reason: READONLY_REFERRER_VUE_SFC.to_owned(),
+                    });
+                    continue;
+                }
                 candidate.referrer_paths.push(referrer_path.clone());
                 let style = ReferrerImportStyle::Relative(module_specifier_extension(
                     &import.module_specifier,
@@ -224,7 +250,26 @@ pub(super) fn scan_parsed_project_files_with_aliases(
     for candidate in &mut candidates {
         candidate.referrer_paths.sort();
         candidate.referrer_paths.dedup();
-        candidate.referrer_count = candidate.referrer_paths.len();
+        candidate.readonly_referrers.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then(left.reason.cmp(&right.reason))
+        });
+        candidate.readonly_referrers.dedup();
+        let mut unique_referrers = BTreeSet::new();
+        unique_referrers.extend(candidate.referrer_paths.iter().cloned());
+        unique_referrers.extend(
+            candidate
+                .readonly_referrers
+                .iter()
+                .map(|referrer| referrer.path.clone()),
+        );
+        candidate.referrer_count = unique_referrers.len();
+        candidate.analysis_limitations = limitations
+            .iter()
+            .filter(|limitation| limitation.reason == ANALYSIS_LIMITATION_UNRESOLVED_VUE)
+            .cloned()
+            .collect();
         candidate.referrer_strategies = candidate
             .referrer_paths
             .iter()

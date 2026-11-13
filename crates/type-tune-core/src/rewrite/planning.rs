@@ -44,6 +44,14 @@ pub(super) fn plan_rewrite(
     sources: &BTreeMap<String, String>,
     options: RewriteOptions<'_>,
 ) -> Result<BTreeMap<String, String>> {
+    crate::source_role::reject_unsupported_rewrite(candidates)?;
+    if let Some(path) = sources.keys().find(|path| {
+        crate::source_role::source_role(path) != crate::source_role::SourceRole::WritableTypeScript
+    }) {
+        return Err(TypeTuneError::new(format!(
+            "Vue rewriting is not supported yet. Refusing to treat {path} as a writable TypeScript source. Apply was rejected before any files were changed."
+        )));
+    }
     let inputs = prepare_rewrite_inputs(candidates, sources, options)?;
     let mut edits_by_path = BTreeMap::<String, Vec<TextEdit>>::new();
     let merged_referrer_import_ranges =

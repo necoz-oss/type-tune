@@ -75,6 +75,8 @@ pub(super) fn scan_parsed_declarations_with_unsupported(
                     .map(|dependency| dependency.declaration_key.clone())
                     .collect(),
                 referrer_strategies: Vec::new(),
+                readonly_referrers: Vec::new(),
+                analysis_limitations: Vec::new(),
                 destination_index_path: None,
             });
         }

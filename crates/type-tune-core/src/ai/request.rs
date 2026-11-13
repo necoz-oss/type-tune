@@ -82,6 +82,8 @@ fn build_candidate_context(
         counted_referrer_count: candidate.counted_referrer_count,
         local_dependency_names: candidate.local_dependency_names.clone(),
         referrer_strategies: candidate.referrer_strategies.clone(),
+        readonly_referrers: candidate.readonly_referrers.clone(),
+        analysis_limitations: candidate.analysis_limitations.clone(),
         source_fingerprint: entry.source_fingerprint.clone(),
         source_context_bytes: None,
         included_context_bytes: None,

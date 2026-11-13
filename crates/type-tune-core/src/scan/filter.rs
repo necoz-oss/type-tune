@@ -139,9 +139,16 @@ fn existing_type_location(candidate: &Candidate) -> Option<(&'static str, &'stat
 }
 
 fn count_referrers(candidate: &Candidate, patterns: &[String]) -> usize {
-    candidate
-        .referrer_paths
-        .iter()
+    let mut paths = std::collections::BTreeSet::new();
+    paths.extend(candidate.referrer_paths.iter().map(String::as_str));
+    paths.extend(
+        candidate
+            .readonly_referrers
+            .iter()
+            .map(|referrer| referrer.path.as_str()),
+    );
+    paths
+        .into_iter()
         .filter(|path| !patterns.iter().any(|pattern| matches(path, pattern)))
         .count()
 }

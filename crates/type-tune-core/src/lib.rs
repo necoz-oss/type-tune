@@ -21,7 +21,9 @@ pub mod rewrite;
 pub mod scan;
 pub mod sort;
 pub mod source;
+mod source_role;
 pub mod transaction;
+mod vue;
 
 pub use error::{Result, TypeTuneError};
 

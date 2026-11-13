@@ -5,3 +5,4 @@
 - [Type-only barrel re-export order](learned/native-barrel-type-reexport-order.md): preserve safe re-export behavior and avoid redirecting unmoved symbols.
 - [Untrusted plan project boundaries](learned/untrusted-plan-project-boundaries.md): validate paths, metadata, and source freshness.
 - [Validated dry-run transaction](learned/validated-dry-run-transaction.md): validate the temporary rewrite and report rollback errors.
+- [Vue read-only referrer boundary](learned/vue-readonly-referrer-boundary.md): count supported Vue script referrers without placing them in the writable rewrite set.

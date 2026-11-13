@@ -36,6 +36,11 @@ pub fn validate_project_relative_typescript_path(
         )));
     }
 
+    let vue_analysis_path =
+        field_path.contains("readonlyReferrers") || field_path.contains("analysisLimitations");
+    if crate::source_role::is_vue_sfc_path(file_path) && vue_analysis_path {
+        return Ok(file_path.to_owned());
+    }
     if is_typescript_declaration_file(file_path)
         || !TYPESCRIPT_SOURCE_EXTENSIONS.contains(&extension(file_path))
     {
@@ -149,6 +154,18 @@ pub(crate) fn visit_candidate_paths(
         visit(
             referrer_path,
             &format!("{candidate_path}.referrerPaths[{index}]"),
+        )?;
+    }
+    for (index, referrer) in candidate.readonly_referrers.iter().enumerate() {
+        visit(
+            &referrer.path,
+            &format!("{candidate_path}.readonlyReferrers[{index}].path"),
+        )?;
+    }
+    for (index, limitation) in candidate.analysis_limitations.iter().enumerate() {
+        visit(
+            &limitation.path,
+            &format!("{candidate_path}.analysisLimitations[{index}].path"),
         )?;
     }
     for (index, referrer_strategy) in candidate.referrer_strategies.iter().enumerate() {
