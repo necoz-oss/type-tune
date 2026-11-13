@@ -145,7 +145,7 @@ pub(crate) fn render_scan_result(
             verbose,
             explain.then_some(result.diagnostics.as_slice()),
         );
-        if !explain && !result.analysis_limitations.is_empty() {
+        if !result.analysis_limitations.is_empty() {
             output.push_str("\nVue analysis limitations:\n");
             for limitation in &result.analysis_limitations {
                 output.push_str(&format!("  - {}\n", limitation.message));

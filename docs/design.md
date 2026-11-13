@@ -94,7 +94,8 @@ The safety contract is deliberately conservative:
 - the final TypeScript compiler validation runs before a transaction is retained;
 - dry runs leave the working tree unchanged;
 - a move that would update a Vue referrer, or that depends on a Vue file the scan could not
-  analyze, is rejected inside rewrite planning before any edit is applied.
+  analyze, is rejected inside rewrite planning before any edit is applied. An unresolved Vue
+  file blocks every candidate from that scan. The scan JSON field is `analysisLimitations`.
 
 This is a source-aware refactoring tool, not a promise that every TypeScript construct can be moved
 automatically. Unsupported declaration shapes are excluded rather than guessed at.

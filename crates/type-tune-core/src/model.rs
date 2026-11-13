@@ -155,6 +155,7 @@ pub enum ImportStrategy {
 
 /// Native scan response compatible with the JSON shape used by the CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanOutput {
     /// Candidates in deterministic order.
     pub candidates: Vec<Candidate>,
@@ -162,17 +163,32 @@ pub struct ScanOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Vec<ScanDiagnostic>>,
     /// Vue files in the selected project that could not be analyzed reliably.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ///
+    /// Serialized as `analysisLimitations` and omitted when empty. Deserialization also accepts
+    /// the earlier `analysis_limitations` name.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "analysis_limitations"
+    )]
     pub analysis_limitations: Vec<AnalysisLimitation>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Candidate, ImportStrategy, ScanOutput};
+    use super::{AnalysisLimitation, Candidate, ImportStrategy, ScanOutput};
+
+    fn limitation() -> AnalysisLimitation {
+        AnalysisLimitation {
+            path: "src/Plain.vue".into(),
+            reason: "unresolvedVueSfc".into(),
+            message: "src/Plain.vue could not be analyzed: it has a <script> block without lang=\"ts\" or lang=\"tsx\".".into(),
+        }
+    }
 
     #[test]
     fn omits_unchanged_count_metadata_from_json() {
-        let output = ScanOutput {
+        let mut output = ScanOutput {
             candidates: vec![Candidate {
                 id: "candidate".into(),
                 declaration_key: "declaration".into(),
@@ -197,8 +213,27 @@ mod tests {
         };
         let json = serde_json::to_value(&output).expect("serializes");
         assert!(json["candidates"][0].get("countedReferrerCount").is_none());
+        assert!(json.get("analysisLimitations").is_none());
+        assert!(json.get("analysis_limitations").is_none());
+        assert!(json["candidates"][0].get("analysisLimitations").is_none());
 
-        let mut output = output;
+        output.analysis_limitations.push(limitation());
+        output.candidates[0].analysis_limitations.push(limitation());
+        let json = serde_json::to_value(&output).expect("serializes");
+        assert!(json.get("analysis_limitations").is_none());
+        assert_eq!(
+            json["analysisLimitations"],
+            serde_json::json!([{
+                "path": "src/Plain.vue",
+                "reason": "unresolvedVueSfc",
+                "message": "src/Plain.vue could not be analyzed: it has a <script> block without lang=\"ts\" or lang=\"tsx\"."
+            }])
+        );
+        assert_eq!(
+            json["candidates"][0]["analysisLimitations"],
+            json["analysisLimitations"]
+        );
+
         output.candidates[0].counted_referrer_count = Some(0);
         let json = serde_json::to_value(&output).expect("serializes");
         assert_eq!(json["candidates"][0]["countedReferrerCount"], 0);
@@ -218,5 +253,28 @@ mod tests {
                 "exportModuleSpecifier": "./types/src",
             })
         );
+    }
+
+    #[test]
+    fn deserializes_current_and_legacy_scan_limitation_keys() {
+        let current = r#"{"candidates":[],"analysisLimitations":[{"path":"src/Plain.vue","reason":"unresolvedVueSfc","message":"plain script"}]}"#;
+        let legacy = r#"{"candidates":[],"analysis_limitations":[{"path":"src/Plain.vue","reason":"unresolvedVueSfc","message":"plain script"}]}"#;
+        let from_current: ScanOutput = serde_json::from_str(current).expect("current key");
+        let from_legacy: ScanOutput = serde_json::from_str(legacy).expect("legacy key");
+        assert_eq!(from_current, from_legacy);
+        assert_eq!(
+            from_current.analysis_limitations,
+            vec![AnalysisLimitation {
+                path: "src/Plain.vue".into(),
+                reason: "unresolvedVueSfc".into(),
+                message: "plain script".into(),
+            }]
+        );
+
+        let empty: ScanOutput = serde_json::from_str(r#"{"candidates":[]}"#).expect("omitted");
+        assert!(empty.analysis_limitations.is_empty());
+        let json = serde_json::to_value(&empty).expect("serializes");
+        assert!(json.get("analysisLimitations").is_none());
+        assert!(json.get("diagnostics").is_none());
     }
 }

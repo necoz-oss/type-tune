@@ -8,7 +8,7 @@ Referrer discovery and rewrite planning share `Candidate`. `referrer_paths` and 
 
 Supported Vue script blocks are counted, then stored on `readonly_referrers`. `referrer_count` includes them. `referrer_strategies` does not. `source_role` is the only classification rewrite planning consults: Vue SFCs are `ReadOnlyVue`, and `reject_unsupported_rewrite` runs at the start of `plan_rewrite`, before edits are built. The same gate rejects a strategy or barrel path whose role is not writable, so a forged `.vue` strategy cannot skip the read-only list.
 
-An SFC that cannot be parsed reliably becomes an `analysis_limitations` entry on every candidate from that scan. It is not recorded as zero referrers. Template and style text never enter the TypeScript parser. Script bytes stay at their original offsets by embedding them in a same-length buffer.
+An SFC that cannot be parsed reliably becomes an `analysisLimitations` entry on every candidate and on the scan result. It is not recorded as zero referrers. One unresolved file therefore rejects every move from that scan; narrowing the gate is future work. Scan JSON omits the field when empty and still accepts the older `analysis_limitations` name. `scan` and `scan --explain` report the same limitations. Template and style text never enter the TypeScript parser. Script bytes stay at their original offsets by embedding them in a same-length buffer.
 
 ## When it applies
 

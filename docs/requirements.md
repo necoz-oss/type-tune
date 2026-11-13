@@ -48,6 +48,11 @@ not receive an import rewrite strategy.
 If a selected `.vue` file cannot be parsed reliably — for example an unclosed script, a script
 without `lang="ts"` or `lang="tsx"`, an external `src` script, or a script with syntax errors —
 scan reports that limitation. The file is not treated as proof that nothing references the type.
+The limitation is project-wide: it is attached to every candidate and also reported once at the
+top level. JSON uses `analysisLimitations` and omits that field when the list is empty. Saved scan
+JSON that still uses `analysis_limitations` can be read. `scan` and `scan --explain` report the
+same limitations in text and JSON. One unresolved Vue file rejects every move from that scan.
+Limiting the gate to candidates that file could affect is future work.
 
 ## Plan and review requirements
 
