@@ -45,6 +45,9 @@ jobs:
       - name: Install Node dependencies
         run: corepack pnpm install --frozen-lockfile
 
+      - name: Test Vue script rewrites with vue-tsc
+        run: cargo test --test vue_tsc_apply -- --ignored --nocapture
+
       - name: Verify CLI movement fixture
         run: node scripts/verify-movement-fixture.mjs
 

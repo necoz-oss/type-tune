@@ -473,10 +473,56 @@ fn rejects_vue_barrel_imports_before_editing() {
 }
 
 #[test]
+fn counts_direct_barrel_and_namespace_vue_imports_once_per_file() {
+    let root = write_project(&[
+        ("tsconfig.json", r#"{"include":["src"]}"#),
+        ("src/types.ts", user_type()),
+        ("src/index.ts", "export type { User } from './types';\n"),
+        (
+            "src/direct/Card.vue",
+            "<template><p>へへへ</p></template>\n<script lang=\"ts\">\nimport type { User } from \"../types\";\n</script>\n<script setup lang=\"ts\">\ndefineProps<{ user: User }>();\n</script>\n",
+        ),
+        (
+            "src/barrel/List.vue",
+            "<script setup lang=\"ts\">\nimport type { User } from \"../index\";\ndefineProps<{ user: User }>();\n</script>\n",
+        ),
+        (
+            "src/namespace/Badge.vue",
+            "<script setup lang=\"ts\">\nimport type * as Types from \"../types\";\ndefineProps<{ user: Types.User }>();\n</script>\n",
+        ),
+    ]);
+    let before = fs::read(root.path().join("src/direct/Card.vue")).unwrap();
+    let (writable, readonly, count) = referrers_for(root.path(), "User");
+    assert!(writable.is_empty(), "{writable:?}");
+    assert_eq!(
+        readonly,
+        [
+            "src/barrel/List.vue",
+            "src/direct/Card.vue",
+            "src/namespace/Badge.vue"
+        ]
+    );
+    assert_eq!(count, 3);
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    let user = candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .unwrap();
+    assert!(user.referrer_strategies.is_empty());
+    assert_eq!(
+        fs::read(root.path().join("src/direct/Card.vue")).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn rejects_unresolved_vue_files_and_forged_vue_strategies() {
     let root = write_project(&[
         ("tsconfig.json", r#"{"include":["src"]}"#),
-        ("src/types.ts", "export interface User { id: string }\n"),
+        (
+            "src/types.ts",
+            "export interface User { id: string }\nexport interface Other { id: string }\n",
+        ),
         (
             "src/app.ts",
             "import type { User } from './types';\nexport type App = User;\n",
@@ -489,14 +535,37 @@ fn rejects_unresolved_vue_files_and_forged_vue_strategies() {
     ]);
     let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
     let user = candidates
-        .into_iter()
+        .iter()
         .find(|candidate| candidate.symbol_name == "User")
-        .unwrap();
+        .unwrap()
+        .clone();
+    assert_eq!(user.referrer_count, 2);
+    assert!(user.readonly_referrers.is_empty());
     assert!(
-        user.analysis_limitations
+        !user
+            .referrer_paths
             .iter()
-            .any(|limitation| limitation.path == "src/Plain.vue")
+            .any(|path| path.ends_with(".vue")),
+        "{:?}",
+        user.referrer_paths
     );
+    let other = candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "Other")
+        .unwrap();
+    assert_eq!(other.referrer_count, 0);
+    for candidate in [&user, other] {
+        assert!(
+            candidate.analysis_limitations.iter().any(|limitation| {
+                limitation.path == "src/Plain.vue"
+                    && limitation.reason == "unresolvedVueSfc"
+                    && limitation.message.contains("without lang=\"ts\"")
+            }),
+            "{candidate:?}"
+        );
+    }
+    let before_types = fs::read(root.path().join("src/types.ts")).unwrap();
+    let before_plain = fs::read(root.path().join("src/Plain.vue")).unwrap();
     let error = plan_extraction_rewrite(
         std::slice::from_ref(&user),
         &std::collections::BTreeMap::new(),
@@ -518,6 +587,15 @@ fn rejects_unresolved_vue_files_and_forged_vue_strategies() {
     )
     .expect_err("rejects forged vue strategy");
     assert!(error.to_string().contains("src/Card.vue"), "{error}");
+    assert_eq!(
+        fs::read(root.path().join("src/types.ts")).unwrap(),
+        before_types
+    );
+    assert_eq!(
+        fs::read(root.path().join("src/Plain.vue")).unwrap(),
+        before_plain
+    );
+    assert!(!root.path().join("src/domain").exists());
 }
 
 #[test]

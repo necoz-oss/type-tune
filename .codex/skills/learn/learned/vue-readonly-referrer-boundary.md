@@ -8,7 +8,9 @@ Referrer discovery and rewrite planning share `Candidate`. `referrer_paths` and 
 
 Supported Vue script blocks are counted on `readonly_referrers` and given `vue_script_strategies`. `referrer_count` includes them. `referrer_strategies` does not. `source_role` is the classification rewrite planning consults: Vue SFCs are `ReadOnlyVue`. `reject_unsupported_rewrite` runs at the start of `plan_rewrite`, before edits are built. It rejects unresolved Vue files, Vue declaration sources, Vue paths in the writable strategy list, and Vue imports that are not direct relative or alias specifiers.
 
-Specifier replacement runs only after the TypeScript plan succeeds. Each replacement range must sit inside an extracted script body. The original file receives those replacements, so bytes outside the quoted specifiers stay intact. `tsc` does not typecheck `.vue` files. A change to a `.vue` path is kept only when `vue-tsc --noEmit` succeeds; a missing or failing `vue-tsc` rolls the transaction back.
+An SFC that cannot be parsed reliably becomes an `analysisLimitations` entry on every candidate and on the scan result. It is not recorded as zero referrers. One unresolved file therefore rejects every move from that scan; narrowing the gate is future work. Scan JSON omits the field when empty and still accepts the older `analysis_limitations` name. `scan` and `scan --explain` report the same limitations. Template and style text never enter the TypeScript parser. Script bytes stay at their original offsets by embedding them in a same-length buffer.
+
+Specifier replacement runs only after the TypeScript plan succeeds. Each replacement range must sit inside an extracted script body. The original file receives those replacements, so bytes outside the quoted specifiers stay intact. `tsc` does not typecheck `.vue` files. A change to a `.vue` path is kept only when `vue-tsc --noEmit` succeeds; a missing or failing `vue-tsc` rolls the transaction back. A TypeScript-only change does not run `vue-tsc`.
 
 ## When it applies
 

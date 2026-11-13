@@ -96,9 +96,12 @@ The safety contract is deliberately conservative:
 - file paths must remain inside the chosen project;
 - the final TypeScript compiler validation runs before a transaction is retained;
 - dry runs leave the working tree unchanged;
-- a Vue referrer is updated only by replacing a module specifier inside a supported script block;
+- a Vue referrer is updated only by replacing a module specifier inside a supported script
+  block, and that change is kept only when both `tsc` and `vue-tsc` succeed;
 - a move that depends on a Vue file the scan could not analyze, or on a Vue import that is not a
-  direct specifier update, is rejected inside rewrite planning before any edit is applied.
+  direct specifier update, is rejected inside rewrite planning before any edit is applied. An
+  unresolved Vue file blocks every candidate from that scan. The scan JSON field is
+  `analysisLimitations`.
 
 This is a source-aware refactoring tool, not a promise that every TypeScript construct can be moved
 automatically. Unsupported declaration shapes are excluded rather than guessed at.

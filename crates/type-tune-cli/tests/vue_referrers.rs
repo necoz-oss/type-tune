@@ -59,11 +59,16 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_type-tune"))
-            .current_dir(&self.0)
-            .args(args)
-            .output()
-            .unwrap()
+        self.run_with_path(args, None)
+    }
+
+    fn run_with_path(&self, args: &[&str], path: Option<&str>) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_type-tune"));
+        command.current_dir(&self.0).args(args);
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        command.output().unwrap()
     }
 }
 
@@ -142,15 +147,27 @@ fn scan_reports_vue_referrers_and_apply_updates_script_specifiers() {
     fixture.write("plan.md", &reviewed);
 
     write_compiler_stub(&fixture.0, "tsc", "#!/bin/sh\nexit 0\n");
-    write_compiler_stub(&fixture.0, "vue-tsc", "#!/bin/sh\nexit 1\n");
-    let before = fixture.snapshot();
-    let failed = fixture.run(&["apply", "--plan", "plan.json", "--markdown", "plan.md"]);
-    assert!(!failed.status.success(), "{}", output_text(&failed));
-    assert!(
-        output_text(&failed).contains("vue-tsc validation failed"),
-        "{}",
-        output_text(&failed)
+    write_compiler_stub(
+        &fixture.0,
+        "vue-tsc",
+        "#!/bin/sh\necho 'Card.vue(4,1): error TS2322: bad' >&2\nexit 1\n",
     );
+    let before = fixture.snapshot();
+    let failed = fixture.run_with_path(
+        &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+        Some(""),
+    );
+    assert!(!failed.status.success(), "{}", output_text(&failed));
+    let failed_text = output_text(&failed);
+    assert!(
+        failed_text.contains("vue-tsc validation failed"),
+        "{failed_text}"
+    );
+    assert!(
+        failed_text.contains("rolled back file changes"),
+        "{failed_text}"
+    );
+    assert!(failed_text.contains("TS2322"), "{failed_text}");
     assert_eq!(fixture.snapshot(), before);
     assert!(!fixture.0.join("src/domain").exists());
 
@@ -203,4 +220,245 @@ fn write_compiler_stub(root: &std::path::Path, name: &str, body: &str) {
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).unwrap();
     }
+}
+
+#[test]
+fn unresolved_vue_file_blocks_an_otherwise_safe_move_without_writing() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "src/Card.vue",
+        "<script setup lang=\"ts\">\nconst label = \"unused\";\n</script>\n",
+    );
+    fixture.write(
+        "src/Plain.vue",
+        "<template><p>label</p></template>\n<script>\nexport default { name: 'Plain' }\n</script>\n",
+    );
+    let before = fixture.snapshot();
+    let plain_before = fs::read(fixture.0.join("src/Plain.vue")).unwrap();
+
+    let scan = fixture.run(&[
+        "scan",
+        "--project",
+        "tsconfig.json",
+        "--format",
+        "json",
+        "--min-referrers",
+        "2",
+    ]);
+    assert!(scan.status.success(), "{}", output_text(&scan));
+    let scan_json: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+    assert!(scan_json.get("analysis_limitations").is_none());
+    assert!(scan_json.get("diagnostics").is_none());
+    let limitations = scan_json["analysisLimitations"].as_array().unwrap();
+    assert_eq!(limitations.len(), 1);
+    assert_eq!(limitations[0]["path"], "src/Plain.vue");
+    assert_eq!(limitations[0]["reason"], "unresolvedVueSfc");
+    assert!(
+        limitations[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("without lang=\"ts\"")
+    );
+    let user = scan_json["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["symbolName"] == "User")
+        .unwrap();
+    assert_eq!(user["referrerCount"], 2);
+    assert!(user.get("readonlyReferrers").is_none());
+    assert_eq!(
+        user["analysisLimitations"],
+        scan_json["analysisLimitations"]
+    );
+    assert!(
+        user["referrerPaths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|path| path != "src/Plain.vue")
+    );
+
+    let explain = fixture.run(&[
+        "scan",
+        "--project",
+        "tsconfig.json",
+        "--format",
+        "json",
+        "--min-referrers",
+        "2",
+        "--explain",
+    ]);
+    assert!(explain.status.success(), "{}", output_text(&explain));
+    let explain_json: serde_json::Value = serde_json::from_slice(&explain.stdout).unwrap();
+    assert_eq!(
+        explain_json["analysisLimitations"],
+        scan_json["analysisLimitations"]
+    );
+    assert!(explain_json.get("analysis_limitations").is_none());
+    assert!(explain_json["diagnostics"].is_array());
+
+    for args in [
+        vec!["scan", "--project", "tsconfig.json", "--min-referrers", "2"],
+        vec![
+            "scan",
+            "--project",
+            "tsconfig.json",
+            "--min-referrers",
+            "2",
+            "--explain",
+        ],
+    ] {
+        let text = fixture.run(&args);
+        assert!(text.status.success(), "{}", output_text(&text));
+        let rendered = output_text(&text);
+        assert!(rendered.contains("Vue analysis limitations:"), "{rendered}");
+        assert!(rendered.contains("src/Plain.vue"), "{rendered}");
+        assert!(rendered.contains("without lang=\"ts\""), "{rendered}");
+    }
+
+    let plan = fixture.run(&[
+        "plan",
+        "--project",
+        "tsconfig.json",
+        "--out",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--min-referrers",
+        "2",
+    ]);
+    assert!(plan.status.success(), "{}", output_text(&plan));
+    let markdown = fs::read_to_string(fixture.0.join("plan.md")).unwrap();
+    let plan_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.0.join("plan.json")).unwrap()).unwrap();
+    let user = plan_json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["candidate"]["symbolName"] == "User")
+        .unwrap();
+    let id = user["candidate"]["id"].as_str().unwrap();
+    let destination = user["candidate"]["destinationPath"].as_str().unwrap();
+    let mut reviewed = markdown.replace(
+        &format!("- [ignore] {id} `User`"),
+        &format!("- [apply] {id} `User`"),
+    );
+    reviewed = reviewed.replace(
+        &format!("  - to: `{destination}`"),
+        "  - to: `src/domain/user.ts`",
+    );
+    fixture.write("plan.md", &reviewed);
+
+    for args in [
+        vec![
+            "apply",
+            "--plan",
+            "plan.json",
+            "--markdown",
+            "plan.md",
+            "--dry-run",
+        ],
+        vec!["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+    ] {
+        let apply = fixture.run(&args);
+        assert!(!apply.status.success(), "{}", output_text(&apply));
+        let text = output_text(&apply);
+        assert!(text.contains("before any files were changed"), "{text}");
+        assert!(text.contains("src/Plain.vue"), "{text}");
+        assert_eq!(fixture.snapshot(), before);
+        assert_eq!(
+            fs::read(fixture.0.join("src/Plain.vue")).unwrap(),
+            plain_before
+        );
+        assert!(!fixture.0.join("src/domain").exists());
+    }
+}
+
+#[test]
+fn missing_vue_tsc_rolls_back_a_vue_edit_and_typescript_only_moves_do_not_need_it() {
+    let fixture = Fixture::new();
+    let plan = fixture.run(&[
+        "plan",
+        "--project",
+        "tsconfig.json",
+        "--out",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--min-referrers",
+        "2",
+    ]);
+    assert!(plan.status.success(), "{}", output_text(&plan));
+    select_user(&fixture, "src/domain/user.ts");
+    write_compiler_stub(&fixture.0, "tsc", "#!/bin/sh\nexit 0\n");
+    assert!(!fixture.0.join("node_modules/.bin/vue-tsc").exists());
+    let before = fixture.snapshot();
+
+    let missing = fixture.run_with_path(
+        &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+        Some(""),
+    );
+    assert!(!missing.status.success(), "{}", output_text(&missing));
+    let text = output_text(&missing);
+    assert!(text.contains("Vue script edits require vue-tsc"), "{text}");
+    assert!(text.contains("could not be started"), "{text}");
+    assert!(text.contains("rolled back"), "{text}");
+    assert_eq!(fixture.snapshot(), before);
+    assert!(!fixture.0.join("src/domain").exists());
+
+    let typescript_only = Fixture::new();
+    typescript_only.write(
+        "src/Card.vue",
+        "<script setup lang=\"ts\">\nconst label = \"unused\";\n</script>\n",
+    );
+    let plan = typescript_only.run(&[
+        "plan",
+        "--project",
+        "tsconfig.json",
+        "--out",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--min-referrers",
+        "2",
+    ]);
+    assert!(plan.status.success(), "{}", output_text(&plan));
+    select_user(&typescript_only, "src/domain/user.ts");
+    write_compiler_stub(&typescript_only.0, "tsc", "#!/bin/sh\nexit 0\n");
+    let vue_before = fs::read(typescript_only.0.join("src/Card.vue")).unwrap();
+    let applied = typescript_only.run_with_path(
+        &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+        Some(""),
+    );
+    assert!(applied.status.success(), "{}", output_text(&applied));
+    assert!(typescript_only.0.join("src/domain/user.ts").is_file());
+    assert_eq!(
+        fs::read(typescript_only.0.join("src/Card.vue")).unwrap(),
+        vue_before
+    );
+}
+
+fn select_user(fixture: &Fixture, destination: &str) {
+    let markdown = fs::read_to_string(fixture.0.join("plan.md")).unwrap();
+    let plan_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.0.join("plan.json")).unwrap()).unwrap();
+    let user = plan_json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["candidate"]["symbolName"] == "User")
+        .unwrap();
+    let id = user["candidate"]["id"].as_str().unwrap();
+    let current = user["candidate"]["destinationPath"].as_str().unwrap();
+    let reviewed = markdown
+        .replace(
+            &format!("- [ignore] {id} `User`"),
+            &format!("- [apply] {id} `User`"),
+        )
+        .replace(
+            &format!("  - to: `{current}`"),
+            &format!("  - to: `{destination}`"),
+        );
+    fixture.write("plan.md", &reviewed);
 }
