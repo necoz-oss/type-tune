@@ -317,6 +317,10 @@ fn skip_whitespace(bytes: &[u8], mut index: usize) -> usize {
     index
 }
 
+fn ascii_prefix_eq_ignore_case(bytes: &[u8], prefix: &[u8]) -> bool {
+    bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
 fn find_comment_end(source: &str, start: usize) -> Option<usize> {
     source[start + 4..]
         .find("-->")
@@ -328,9 +332,7 @@ fn find_raw_end(source: &str, from: usize, name: &str) -> Option<(usize, usize)>
     let closing = format!("</{name}");
     let mut index = from;
     while index < bytes.len() {
-        if bytes[index] == b'<'
-            && source[index..].len() >= closing.len()
-            && source[index..index + closing.len()].eq_ignore_ascii_case(&closing)
+        if bytes[index] == b'<' && ascii_prefix_eq_ignore_case(&bytes[index..], closing.as_bytes())
         {
             let mut cursor = index + closing.len();
             while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
@@ -536,6 +538,12 @@ mod tests {
             SourceParse::NoTypeScript => "no typescript".into(),
             SourceParse::Analyzed(_) => "analyzed".into(),
         }
+    }
+
+    #[test]
+    fn parses_japanese_text_around_short_tags() {
+        let source = "<template><p>へへへ</p></template>\n<script setup lang=\"ts\">\nimport type { User } from \"./types\";\n</script>\n";
+        assert_eq!(script_of(source), "User");
     }
 
     #[test]
