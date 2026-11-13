@@ -174,6 +174,7 @@ pub enum ImportStrategy {
 
 /// Native scan response compatible with the JSON shape used by the CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanOutput {
     /// Candidates in deterministic order.
     pub candidates: Vec<Candidate>,
@@ -187,11 +188,11 @@ pub struct ScanOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{Candidate, ImportStrategy, ScanOutput};
+    use super::{AnalysisLimitation, Candidate, ImportStrategy, ScanOutput};
 
     #[test]
     fn omits_unchanged_count_metadata_from_json() {
-        let output = ScanOutput {
+        let mut output = ScanOutput {
             candidates: vec![Candidate {
                 id: "candidate".into(),
                 declaration_key: "declaration".into(),
@@ -218,8 +219,17 @@ mod tests {
         };
         let json = serde_json::to_value(&output).expect("serializes");
         assert!(json["candidates"][0].get("countedReferrerCount").is_none());
+        assert!(json.get("analysisLimitations").is_none());
 
-        let mut output = output;
+        output.analysis_limitations.push(AnalysisLimitation {
+            path: "src/Card.vue".into(),
+            reason: "unresolvedVueSfc".into(),
+            message: "missing lang".into(),
+        });
+        let json = serde_json::to_value(&output).expect("serializes");
+        assert!(json.get("analysis_limitations").is_none());
+        assert_eq!(json["analysisLimitations"][0]["path"], "src/Card.vue");
+
         output.candidates[0].counted_referrer_count = Some(0);
         let json = serde_json::to_value(&output).expect("serializes");
         assert_eq!(json["candidates"][0]["countedReferrerCount"], 0);
