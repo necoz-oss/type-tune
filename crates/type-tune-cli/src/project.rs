@@ -86,8 +86,8 @@ pub(crate) fn read_rewrite_sources(
     discovered
         .into_iter()
         .chain(candidates.iter().flat_map(|candidate| {
-            std::iter::once(candidate.source_path.clone()).chain(
-                candidate.referrer_strategies.iter().flat_map(|strategy| {
+            std::iter::once(candidate.source_path.clone())
+                .chain(candidate.referrer_strategies.iter().flat_map(|strategy| {
                     std::iter::once(strategy.referrer_path.clone()).chain(
                         match &strategy.strategy {
                             ImportStrategy::Barrel {
@@ -96,8 +96,19 @@ pub(crate) fn read_rewrite_sources(
                             ImportStrategy::Alias { .. } | ImportStrategy::Relative { .. } => None,
                         },
                     )
-                }),
-            )
+                }))
+                .chain(
+                    candidate
+                        .vue_script_strategies
+                        .iter()
+                        .map(|strategy| strategy.referrer_path.clone()),
+                )
+                .chain(
+                    candidate
+                        .vue_rewrite_blockers
+                        .iter()
+                        .map(|blocker| blocker.path.clone()),
+                )
         }))
         .collect::<BTreeSet<_>>()
         .into_iter()

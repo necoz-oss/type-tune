@@ -48,8 +48,9 @@ them with tree-sitter, and resolves type-only relationships using the project co
 emits candidates as text or JSON. `--explain` also reports exported declarations intentionally
 omitted from the result. Included `.vue` files are not parsed as TypeScript files. A dedicated
 extractor reads supported script blocks, preserves their original byte offsets, and feeds only
-that TypeScript into the existing import and usage analysis. Those referrers stay in a read-only
-list. Writable referrer strategies remain TypeScript-only.
+that TypeScript into the existing import and usage analysis. Those referrers stay out of the
+writable TypeScript edit pipeline. A later step may replace module specifiers inside the extracted
+script ranges. Template and style bytes are not edited.
 
 Candidates are limited to exported type aliases and interfaces. Generated files and declarations
 already in a `types` directory are excluded by default; callers can opt in with
@@ -70,8 +71,10 @@ stale plan later.
 `apply` merges the plan with its reviewed Markdown state, rejects stale or conflicting entries,
 and executes a transaction. It moves the declaration and its safe local type dependencies, updates
 relative, alias, or simple barrel imports, and preserves compatibility re-exports where needed.
-It then runs the project-local TypeScript compiler. A compiler failure or operational error rolls
-the transaction back. `--dry-run` follows that same path and always rolls the changes back.
+It then runs the project-local TypeScript compiler. When the rewrite changes a `.vue` file, it also
+runs `vue-tsc` because `tsc` does not typecheck single-file components. A missing `vue-tsc`, a
+compiler failure, or an operational error rolls the transaction back. `--dry-run` follows that same
+path and always rolls the changes back.
 
 `extract <symbol> --from <path>` builds a one-symbol operation with the same safeguards. It is
 useful when a declaration does not meet the scan's referrer threshold but a developer has already
@@ -93,8 +96,9 @@ The safety contract is deliberately conservative:
 - file paths must remain inside the chosen project;
 - the final TypeScript compiler validation runs before a transaction is retained;
 - dry runs leave the working tree unchanged;
-- a move that would update a Vue referrer, or that depends on a Vue file the scan could not
-  analyze, is rejected inside rewrite planning before any edit is applied.
+- a Vue referrer is updated only by replacing a module specifier inside a supported script block;
+- a move that depends on a Vue file the scan could not analyze, or on a Vue import that is not a
+  direct specifier update, is rejected inside rewrite planning before any edit is applied.
 
 This is a source-aware refactoring tool, not a promise that every TypeScript construct can be moved
 automatically. Unsupported declaration shapes are excluded rather than guessed at.

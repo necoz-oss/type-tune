@@ -17,6 +17,8 @@ pub(crate) struct AnalyzedSource {
     pub(crate) path: String,
     /// TypeScript analysis. Vue script offsets are positions in the original file.
     pub(crate) parsed: ParsedSource,
+    /// Inclusive-exclusive byte ranges of supported Vue script bodies in the original file.
+    pub(crate) script_ranges: Vec<(usize, usize)>,
     /// Whether the rewrite pipeline may edit this file.
     pub(crate) role: SourceRole,
 }
@@ -41,25 +43,29 @@ pub(crate) fn parse_analysis_source(path: &str, source: &str) -> Result<SourcePa
         return Ok(SourceParse::Analyzed(AnalyzedSource {
             path: path.to_owned(),
             parsed: crate::parser::parse_source(source)?,
+            script_ranges: Vec::new(),
             role: SourceRole::WritableTypeScript,
         }));
     }
     Ok(match extract_vue_typescript(path, source) {
         VueExtract::NoTypeScript => SourceParse::NoTypeScript,
         VueExtract::Unsupported(limitation) => SourceParse::Unsupported(limitation),
-        VueExtract::TypeScript { embedded, dialect } => {
-            match parse_exact_dialect(&embedded, dialect)? {
-                Some(parsed) => SourceParse::Analyzed(AnalyzedSource {
-                    path: path.to_owned(),
-                    parsed,
-                    role: SourceRole::ReadOnlyVue,
-                }),
-                None => SourceParse::Unsupported(limitation(
-                    path,
-                    "its TypeScript script block has syntax errors, so its imports cannot be counted safely",
-                )),
-            }
-        }
+        VueExtract::TypeScript {
+            embedded,
+            dialect,
+            script_ranges,
+        } => match parse_exact_dialect(&embedded, dialect)? {
+            Some(parsed) => SourceParse::Analyzed(AnalyzedSource {
+                path: path.to_owned(),
+                parsed,
+                script_ranges,
+                role: SourceRole::ReadOnlyVue,
+            }),
+            None => SourceParse::Unsupported(limitation(
+                path,
+                "its TypeScript script block has syntax errors, so its imports cannot be counted safely",
+            )),
+        },
     })
 }
 
@@ -69,6 +75,7 @@ enum VueExtract {
     TypeScript {
         embedded: String,
         dialect: TypeScriptDialect,
+        script_ranges: Vec<(usize, usize)>,
     },
 }
 
@@ -199,7 +206,14 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
             "its script block could not be embedded without splitting a character",
         ));
     };
-    VueExtract::TypeScript { embedded, dialect }
+    VueExtract::TypeScript {
+        embedded,
+        dialect,
+        script_ranges: scripts
+            .iter()
+            .map(|script| (script.content_start, script.content_end))
+            .collect(),
+    }
 }
 
 fn note_script(

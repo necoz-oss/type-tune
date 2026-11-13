@@ -68,6 +68,8 @@ defineEmits<{ save: [user: User] }>();
         .find(|candidate| candidate.symbol_name == "User")
         .unwrap();
     assert!(user.referrer_strategies.is_empty());
+    assert_eq!(user.vue_script_strategies.len(), 1);
+    assert!(user.vue_rewrite_blockers.is_empty());
     assert!(
         user.readonly_referrers
             .iter()
@@ -224,7 +226,7 @@ fn reports_malformed_vue_files_without_counting_partial_usage() {
 }
 
 #[test]
-fn rejects_vue_referrer_rewrites_before_producing_edits() {
+fn rewrites_vue_script_specifiers_without_touching_template_or_style() {
     let root = write_project(&[
         ("tsconfig.json", r#"{"include":["src"]}"#),
         ("src/types.ts", user_type()),
@@ -238,10 +240,11 @@ fn rejects_vue_referrer_rewrites_before_producing_edits() {
         ),
         (
             "src/Card.vue",
-            "<script setup lang=\"ts\">\nimport type { User } from \"./types\";\ndefineProps<{ user: User }>();\n</script>\n",
+            "<template><p>{{ user.name }}</p></template>\n<script setup lang=\"ts\">\nimport type { User } from \"./types\";\ndefineProps<{ user: User }>();\n</script>\n<style>.user { color: User; }</style>\n",
         ),
     ]);
     let before = fs::read(root.path().join("src/types.ts")).unwrap();
+    let vue_before = fs::read(root.path().join("src/Card.vue")).unwrap();
     let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
     let user = candidates
         .into_iter()
@@ -251,7 +254,7 @@ fn rejects_vue_referrer_rewrites_before_producing_edits() {
     let eligible = filter_min_referrers(vec![user], 2);
     assert_eq!(eligible.len(), 1);
     let mut sources = std::collections::BTreeMap::new();
-    for path in ["src/types.ts", "src/app.ts", "src/page.ts"] {
+    for path in ["src/types.ts", "src/app.ts", "src/page.ts", "src/Card.vue"] {
         sources.insert(
             path.to_owned(),
             read_typescript_source_text(&root.path().join(path))
@@ -259,21 +262,213 @@ fn rejects_vue_referrer_rewrites_before_producing_edits() {
                 .unwrap(),
         );
     }
-    let error = plan_extraction_rewrite(&eligible, &sources).expect_err("rejects vue referrer");
-    let message = error.to_string();
+    let user = eligible.into_iter().next().unwrap();
+    let specifier = match &user.vue_script_strategies[0].strategy {
+        crate::model::ImportStrategy::Relative { module_specifier }
+        | crate::model::ImportStrategy::Alias { module_specifier } => module_specifier.clone(),
+        crate::model::ImportStrategy::Barrel { .. } => panic!("vue barrel strategy"),
+    };
+    let changes = plan_extraction_rewrite(std::slice::from_ref(&user), &sources)
+        .expect("rewrites vue specifier");
+    let vue = changes.get("src/Card.vue").expect("vue edit");
     assert!(
-        message.contains("Vue rewriting is not supported yet"),
-        "{message}"
+        vue.contains("<template><p>{{ user.name }}</p></template>\n"),
+        "{vue}"
     );
-    assert!(message.contains("src/Card.vue"), "{message}");
     assert!(
-        message.contains("before any files were changed"),
-        "{message}"
+        vue.contains("<style>.user { color: User; }</style>\n"),
+        "{vue}"
     );
+    assert!(
+        vue.contains(&format!("\"{specifier}\"")),
+        "{vue} {specifier}"
+    );
+    assert!(!vue.contains("\"./types\""), "{vue}");
     assert_eq!(fs::read(root.path().join("src/types.ts")).unwrap(), before);
     assert_eq!(
-        fs::read_to_string(root.path().join("src/Card.vue")).unwrap(),
-        "<script setup lang=\"ts\">\nimport type { User } from \"./types\";\ndefineProps<{ user: User }>();\n</script>\n"
+        fs::read(root.path().join("src/Card.vue")).unwrap(),
+        vue_before
+    );
+}
+
+#[test]
+fn rewrites_multiline_imports_in_both_script_blocks() {
+    let root = write_project(&[
+        ("tsconfig.json", r#"{"include":["src"]}"#),
+        ("src/types.ts", user_type()),
+        (
+            "src/app.ts",
+            "import type { User } from './types';\nexport type App = User;\n",
+        ),
+        (
+            "src/page.ts",
+            "import type { User } from './types';\nexport type Page = User;\n",
+        ),
+        (
+            "src/Card.vue",
+            "<script lang=\"ts\">\nimport type {\n  User,\n} from \"./types\";\n</script>\n<script setup lang=\"ts\">\ndefineProps<{ user: User }>();\n</script>\n<template><User /></template>\n",
+        ),
+    ]);
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    let user = candidates
+        .into_iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .unwrap();
+    let mut sources = std::collections::BTreeMap::new();
+    for path in ["src/types.ts", "src/app.ts", "src/page.ts", "src/Card.vue"] {
+        sources.insert(
+            path.to_owned(),
+            read_typescript_source_text(&root.path().join(path))
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let changes = plan_extraction_rewrite(std::slice::from_ref(&user), &sources).unwrap();
+    let vue = changes.get("src/Card.vue").unwrap();
+    assert!(vue.contains("<template><User /></template>\n"), "{vue}");
+    assert!(vue.contains("import type {\n  User,\n} from "), "{vue}");
+    assert!(!vue.contains("\"./types\""), "{vue}");
+}
+
+#[test]
+fn rewrites_aliased_vue_imports() {
+    let root = write_project(&[
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}},"include":["src"]}"#,
+        ),
+        ("src/types.ts", user_type()),
+        (
+            "src/app.ts",
+            "import type { User } from './types';\nexport type App = User;\n",
+        ),
+        (
+            "src/page.ts",
+            "import type { User } from './types';\nexport type Page = User;\n",
+        ),
+        (
+            "src/Card.vue",
+            "<script lang=\"ts\">\nimport type { User as Person } from \"@/types\";\nexport default { props: {} as { user: Person } };\n</script>\n",
+        ),
+    ]);
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    let user = candidates
+        .into_iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .unwrap();
+    let specifier = match &user.vue_script_strategies[0].strategy {
+        crate::model::ImportStrategy::Alias { module_specifier }
+        | crate::model::ImportStrategy::Relative { module_specifier } => module_specifier.clone(),
+        crate::model::ImportStrategy::Barrel { .. } => panic!("vue barrel strategy"),
+    };
+    assert!(
+        specifier.starts_with('@') || specifier.starts_with('.'),
+        "{specifier}"
+    );
+    let mut aliases = std::collections::BTreeMap::new();
+    aliases.insert("@/*".into(), vec!["src/*".into()]);
+    let mut sources = std::collections::BTreeMap::new();
+    for path in ["src/types.ts", "src/app.ts", "src/page.ts", "src/Card.vue"] {
+        sources.insert(
+            path.to_owned(),
+            read_typescript_source_text(&root.path().join(path))
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let changes = crate::rewrite::plan_extraction_rewrite_with_aliases(
+        std::slice::from_ref(&user),
+        &sources,
+        Some("."),
+        &aliases,
+        crate::rewrite::CompatibilityReexportQuoteStyle::Apply,
+    )
+    .unwrap();
+    let vue = changes.get("src/Card.vue").unwrap();
+    assert!(
+        vue.contains(&format!("\"{specifier}\"")),
+        "{vue} {specifier}"
+    );
+    assert!(vue.contains("User as Person"), "{vue}");
+    assert!(!vue.contains("\"@/types\""), "{vue}");
+}
+
+#[test]
+fn rejects_vue_imports_that_bind_an_unmoved_symbol() {
+    let root = write_project(&[
+        ("tsconfig.json", r#"{"include":["src"]}"#),
+        ("src/types.ts", user_type()),
+        (
+            "src/app.ts",
+            "import type { User } from './types';\nexport type App = User;\n",
+        ),
+        (
+            "src/page.ts",
+            "import type { User } from './types';\nexport type Page = User;\n",
+        ),
+        (
+            "src/Card.vue",
+            "<script setup lang=\"ts\">\nimport type { User, Other } from \"./types\";\ndefineProps<{ user: User }>();\n</script>\n",
+        ),
+    ]);
+    let before = fs::read(root.path().join("src/Card.vue")).unwrap();
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    let user = candidates
+        .into_iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .unwrap();
+    let mut sources = std::collections::BTreeMap::new();
+    for path in ["src/types.ts", "src/app.ts", "src/page.ts", "src/Card.vue"] {
+        sources.insert(
+            path.to_owned(),
+            read_typescript_source_text(&root.path().join(path))
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let error = plan_extraction_rewrite(std::slice::from_ref(&user), &sources)
+        .expect_err("rejects mixed vue import");
+    assert!(
+        error.to_string().contains("not part of this move"),
+        "{error}"
+    );
+    assert_eq!(fs::read(root.path().join("src/Card.vue")).unwrap(), before);
+}
+
+#[test]
+fn rejects_vue_barrel_imports_before_editing() {
+    let root = write_project(&[
+        ("tsconfig.json", r#"{"include":["src"]}"#),
+        ("src/types.ts", "export interface User { id: string }\n"),
+        ("src/index.ts", "export type { User } from \"./types\";\n"),
+        (
+            "src/app.ts",
+            "import type { User } from './types';\nexport type App = User;\n",
+        ),
+        (
+            "src/Card.vue",
+            "<script setup lang=\"ts\">\nimport type { User } from \"./index\";\ndefineProps<{ user: User }>();\n</script>\n",
+        ),
+    ]);
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    let user = candidates
+        .into_iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .unwrap();
+    assert!(
+        user.vue_rewrite_blockers
+            .iter()
+            .any(|blocker| blocker.path == "src/Card.vue" && blocker.message.contains("barrel"))
+    );
+    let error = plan_extraction_rewrite(
+        std::slice::from_ref(&user),
+        &std::collections::BTreeMap::new(),
+    )
+    .expect_err("rejects vue barrel");
+    assert!(error.to_string().contains("src/Card.vue"), "{error}");
+    assert!(
+        error.to_string().contains("before any files were changed"),
+        "{error}"
     );
 }
 

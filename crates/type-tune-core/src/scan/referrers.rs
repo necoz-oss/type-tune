@@ -8,7 +8,7 @@ use crate::{
     Result,
     model::{
         ANALYSIS_LIMITATION_UNRESOLVED_VUE, AnalysisLimitation, Candidate, ImportStrategy,
-        READONLY_REFERRER_VUE_SFC, ReadOnlyReferrer, ReferrerStrategy,
+        READONLY_REFERRER_VUE_SFC, ReadOnlyReferrer, ReferrerStrategy, VueRewriteBlocker,
     },
     module_path::{
         PackageAliasScopes, is_configured_path_alias,
@@ -72,6 +72,8 @@ pub(super) fn scan_parsed_project_files_with_aliases(
         &known_paths,
     )?;
     let mut referrer_styles = HashMap::new();
+    let mut vue_referrer_styles = HashMap::new();
+    let mut vue_blockers = HashSet::new();
     for file in &parsed_files {
         let referrer_path = &file.path;
         let parsed_source = &file.parsed;
@@ -131,14 +133,6 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                     .collect::<Vec<_>>();
                 let barrel_import = !matching_barrel_exports.is_empty();
                 if (direct_import || barrel_import) && referrer_path != &candidate.source_path {
-                    if file.role == SourceRole::ReadOnlyVue {
-                        candidate.readonly_referrers.push(ReadOnlyReferrer {
-                            path: referrer_path.clone(),
-                            reason: READONLY_REFERRER_VUE_SFC.to_owned(),
-                        });
-                        continue;
-                    }
-                    candidate.referrer_paths.push(referrer_path.clone());
                     let style = if let Some(export) =
                         matching_barrel_exports.iter().find(|export| {
                             !export.is_namespace_wildcard
@@ -171,14 +165,29 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                             default_module_specifier_extension,
                         ))
                     };
-                    referrer_styles.insert(
-                        (
-                            candidate.source_path.clone(),
-                            candidate.symbol_name.clone(),
-                            referrer_path.clone(),
-                        ),
-                        style,
+                    let style_key = (
+                        candidate.source_path.clone(),
+                        candidate.symbol_name.clone(),
+                        referrer_path.clone(),
                     );
+                    if file.role == SourceRole::ReadOnlyVue {
+                        candidate.readonly_referrers.push(ReadOnlyReferrer {
+                            path: referrer_path.clone(),
+                            reason: READONLY_REFERRER_VUE_SFC.to_owned(),
+                        });
+                        if matches!(
+                            style,
+                            ReferrerImportStyle::Barrel { .. }
+                                | ReferrerImportStyle::NamespaceRelative
+                        ) {
+                            vue_blockers.insert(style_key);
+                        } else {
+                            vue_referrer_styles.insert(style_key, style);
+                        }
+                        continue;
+                    }
+                    candidate.referrer_paths.push(referrer_path.clone());
+                    referrer_styles.insert(style_key, style);
                 }
             }
         }
@@ -225,11 +234,26 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                 if !(direct_import || barrel_import) || referrer_path == &candidate.source_path {
                     continue;
                 }
+                let style_key = (
+                    candidate.source_path.clone(),
+                    candidate.symbol_name.clone(),
+                    referrer_path.clone(),
+                );
                 if file.role == SourceRole::ReadOnlyVue {
                     candidate.readonly_referrers.push(ReadOnlyReferrer {
                         path: referrer_path.clone(),
                         reason: READONLY_REFERRER_VUE_SFC.to_owned(),
                     });
+                    if barrel_import {
+                        vue_blockers.insert(style_key);
+                    } else {
+                        vue_referrer_styles.entry(style_key).or_insert(
+                            ReferrerImportStyle::Relative(module_specifier_extension(
+                                &import.module_specifier,
+                                default_module_specifier_extension,
+                            )),
+                        );
+                    }
                     continue;
                 }
                 candidate.referrer_paths.push(referrer_path.clone());
@@ -237,13 +261,7 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                     &import.module_specifier,
                     default_module_specifier_extension,
                 ));
-                referrer_styles
-                    .entry((
-                        candidate.source_path.clone(),
-                        candidate.symbol_name.clone(),
-                        referrer_path.clone(),
-                    ))
-                    .or_insert(style);
+                referrer_styles.entry(style_key).or_insert(style);
             }
         }
     }
@@ -275,96 +293,155 @@ pub(super) fn scan_parsed_project_files_with_aliases(
             .iter()
             .map(|referrer_path| ReferrerStrategy {
                 referrer_path: referrer_path.clone(),
-                strategy: match referrer_styles.get(&(
-                    candidate.source_path.clone(),
-                    candidate.symbol_name.clone(),
-                    referrer_path.clone(),
-                )) {
-                    Some(ReferrerImportStyle::Barrel {
-                        path,
-                        extension,
-                        original_specifier,
-                    }) => {
-                        let specifier = if preserve_path_aliases
-                            && !is_relative_module_specifier(original_specifier)
-                            && is_configured_path_alias(original_specifier, path_aliases)
-                        {
-                            resolve_alias_module_specifier_with_known_paths(
-                                &candidate.destination_path,
-                                base_url,
-                                path_aliases,
-                                Some(original_specifier),
-                                Some(&known_paths),
-                                module_suffixes,
-                                extension,
-                            )
-                            .map(|alias| format!("{alias}{extension}"))
-                        } else {
-                            None
-                        }
-                        .unwrap_or_else(|| {
-                            relative_module_specifier_with_extension(
-                                path,
-                                &candidate.destination_path,
-                                extension,
-                            )
-                        });
-                        ImportStrategy::Barrel {
-                            barrel_file_path: path.clone(),
-                            export_module_specifier: specifier,
-                        }
-                    }
-                    Some(ReferrerImportStyle::Alias { original_specifier }) => {
-                        let extension = module_specifier_extension(
-                            original_specifier,
-                            default_module_specifier_extension,
-                        );
-                        resolve_alias_module_specifier_with_known_paths(
-                            &candidate.destination_path,
-                            base_url,
-                            path_aliases,
-                            Some(original_specifier),
-                            Some(&known_paths),
-                            module_suffixes,
-                            &extension,
-                        )
-                        .map(|module_specifier| ImportStrategy::Alias {
-                            module_specifier: format!("{module_specifier}{extension}"),
-                        })
-                        .unwrap_or_else(|| ImportStrategy::Relative {
-                            module_specifier: relative_module_specifier_with_extension(
-                                referrer_path,
-                                &candidate.destination_path,
-                                &extension,
-                            ),
-                        })
-                    }
-                    Some(ReferrerImportStyle::NamespaceRelative) => ImportStrategy::Relative {
-                        module_specifier: relative_module_specifier(
-                            referrer_path,
-                            &candidate.destination_path,
-                        ),
-                    },
-                    Some(ReferrerImportStyle::Relative(extension)) => ImportStrategy::Relative {
-                        module_specifier: relative_module_specifier_with_extension(
-                            referrer_path,
-                            &candidate.destination_path,
-                            extension,
-                        ),
-                    },
-                    None => ImportStrategy::Relative {
-                        module_specifier: relative_module_specifier_with_extension(
-                            referrer_path,
-                            &candidate.destination_path,
-                            default_module_specifier_extension,
-                        ),
-                    },
-                },
+                strategy: import_strategy_from_style(
+                    referrer_styles.get(&(
+                        candidate.source_path.clone(),
+                        candidate.symbol_name.clone(),
+                        referrer_path.clone(),
+                    )),
+                    &candidate.destination_path,
+                    referrer_path,
+                    base_url,
+                    path_aliases,
+                    &known_paths,
+                    module_suffixes,
+                    preserve_path_aliases,
+                    default_module_specifier_extension,
+                ),
             })
             .collect();
+        candidate.vue_script_strategies = Vec::new();
+        candidate.vue_rewrite_blockers = Vec::new();
+        for referrer in &candidate.readonly_referrers {
+            let style_key = (
+                candidate.source_path.clone(),
+                candidate.symbol_name.clone(),
+                referrer.path.clone(),
+            );
+            if vue_blockers.contains(&style_key) {
+                candidate.vue_rewrite_blockers.push(VueRewriteBlocker {
+                    path: referrer.path.clone(),
+                    message: format!(
+                        "Cannot update Vue referrer {} for {} because the import is not a direct relative or alias specifier. Vue barrel and namespace-barrel updates are not supported yet.",
+                        referrer.path, candidate.symbol_name
+                    ),
+                });
+                continue;
+            }
+            let Some(style) = vue_referrer_styles.get(&style_key) else {
+                candidate.vue_rewrite_blockers.push(VueRewriteBlocker {
+                    path: referrer.path.clone(),
+                    message: format!(
+                        "Cannot update Vue referrer {} for {} because its import strategy could not be planned.",
+                        referrer.path, candidate.symbol_name
+                    ),
+                });
+                continue;
+            };
+            candidate.vue_script_strategies.push(ReferrerStrategy {
+                referrer_path: referrer.path.clone(),
+                strategy: import_strategy_from_style(
+                    Some(style),
+                    &candidate.destination_path,
+                    &referrer.path,
+                    base_url,
+                    path_aliases,
+                    &known_paths,
+                    module_suffixes,
+                    preserve_path_aliases,
+                    default_module_specifier_extension,
+                ),
+            });
+        }
         candidate.destination_index_path = destination_index_path(&candidate.referrer_strategies);
     }
     Ok(candidates)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_strategy_from_style(
+    style: Option<&ReferrerImportStyle>,
+    destination_path: &str,
+    referrer_path: &str,
+    base_url: Option<&str>,
+    path_aliases: &BTreeMap<String, Vec<String>>,
+    known_paths: &HashSet<String>,
+    module_suffixes: &[String],
+    preserve_path_aliases: bool,
+    default_module_specifier_extension: &str,
+) -> ImportStrategy {
+    match style {
+        Some(ReferrerImportStyle::Barrel {
+            path,
+            extension,
+            original_specifier,
+        }) => {
+            let specifier = if preserve_path_aliases
+                && !is_relative_module_specifier(original_specifier)
+                && is_configured_path_alias(original_specifier, path_aliases)
+            {
+                resolve_alias_module_specifier_with_known_paths(
+                    destination_path,
+                    base_url,
+                    path_aliases,
+                    Some(original_specifier),
+                    Some(known_paths),
+                    module_suffixes,
+                    extension,
+                )
+                .map(|alias| format!("{alias}{extension}"))
+            } else {
+                None
+            }
+            .unwrap_or_else(|| {
+                relative_module_specifier_with_extension(path, destination_path, extension)
+            });
+            ImportStrategy::Barrel {
+                barrel_file_path: path.clone(),
+                export_module_specifier: specifier,
+            }
+        }
+        Some(ReferrerImportStyle::Alias { original_specifier }) => {
+            let extension =
+                module_specifier_extension(original_specifier, default_module_specifier_extension);
+            resolve_alias_module_specifier_with_known_paths(
+                destination_path,
+                base_url,
+                path_aliases,
+                Some(original_specifier),
+                Some(known_paths),
+                module_suffixes,
+                &extension,
+            )
+            .map(|module_specifier| ImportStrategy::Alias {
+                module_specifier: format!("{module_specifier}{extension}"),
+            })
+            .unwrap_or_else(|| ImportStrategy::Relative {
+                module_specifier: relative_module_specifier_with_extension(
+                    referrer_path,
+                    destination_path,
+                    &extension,
+                ),
+            })
+        }
+        Some(ReferrerImportStyle::NamespaceRelative) => ImportStrategy::Relative {
+            module_specifier: relative_module_specifier(referrer_path, destination_path),
+        },
+        Some(ReferrerImportStyle::Relative(extension)) => ImportStrategy::Relative {
+            module_specifier: relative_module_specifier_with_extension(
+                referrer_path,
+                destination_path,
+                extension,
+            ),
+        },
+        None => ImportStrategy::Relative {
+            module_specifier: relative_module_specifier_with_extension(
+                referrer_path,
+                destination_path,
+                default_module_specifier_extension,
+            ),
+        },
+    }
 }
 
 fn module_specifier_extension(specifier: &str, default_extension: &str) -> String {

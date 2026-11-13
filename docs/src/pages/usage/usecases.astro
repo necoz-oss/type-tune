@@ -87,8 +87,8 @@ import TextLink from "../../shared/ui/text-link.astro";
       <p>
         That re-export lets unscanned Svelte, Astro, JavaScript, and external consumers keep
         importing the old path. It does not typecheck those consumers. Vue components with supported
-        TypeScript script blocks are counted instead, and a move that would need to update them is
-        rejected until Vue rewriting exists. Generated files stay out of the scan unless you pass
+        TypeScript script blocks are counted, and a direct type-import specifier in those scripts
+        can be updated. Generated files stay out of the scan unless you pass
         <code>--include-generated</code>.
       </p>
     </section>

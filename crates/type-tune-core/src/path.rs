@@ -36,8 +36,10 @@ pub fn validate_project_relative_typescript_path(
         )));
     }
 
-    let vue_analysis_path =
-        field_path.contains("readonlyReferrers") || field_path.contains("analysisLimitations");
+    let vue_analysis_path = field_path.contains("readonlyReferrers")
+        || field_path.contains("analysisLimitations")
+        || field_path.contains("vueScriptStrategies")
+        || field_path.contains("vueRewriteBlockers");
     if crate::source_role::is_vue_sfc_path(file_path) && vue_analysis_path {
         return Ok(file_path.to_owned());
     }
@@ -160,6 +162,18 @@ pub(crate) fn visit_candidate_paths(
         visit(
             &referrer.path,
             &format!("{candidate_path}.readonlyReferrers[{index}].path"),
+        )?;
+    }
+    for (index, referrer_strategy) in candidate.vue_script_strategies.iter().enumerate() {
+        visit(
+            &referrer_strategy.referrer_path,
+            &format!("{candidate_path}.vueScriptStrategies[{index}].referrerPath"),
+        )?;
+    }
+    for (index, blocker) in candidate.vue_rewrite_blockers.iter().enumerate() {
+        visit(
+            &blocker.path,
+            &format!("{candidate_path}.vueRewriteBlockers[{index}].path"),
         )?;
     }
     for (index, limitation) in candidate.analysis_limitations.iter().enumerate() {

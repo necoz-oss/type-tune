@@ -68,6 +68,16 @@ pub(crate) fn commit_and_validate(
             rollback: transaction.rollback().err().map(|error| error.to_string()),
         });
     }
+    if let Err(diagnostics) = type_tune_core::compiler::validate_vue_script_edits(
+        project_root,
+        compiler_project,
+        changes.keys(),
+    ) {
+        return Err(CommitError::Validation {
+            diagnostics,
+            rollback: transaction.rollback().err().map(|error| error.to_string()),
+        });
+    }
     Ok(())
 }
 

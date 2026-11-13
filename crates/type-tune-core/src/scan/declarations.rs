@@ -76,6 +76,8 @@ pub(super) fn scan_parsed_declarations_with_unsupported(
                     .collect(),
                 referrer_strategies: Vec::new(),
                 readonly_referrers: Vec::new(),
+                vue_script_strategies: Vec::new(),
+                vue_rewrite_blockers: Vec::new(),
                 analysis_limitations: Vec::new(),
                 destination_index_path: None,
             });

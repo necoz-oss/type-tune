@@ -13,16 +13,18 @@ project—without deciding on the developer's behalf that every shared type shou
 
 - One TypeScript project selected with `--project <tsconfig>`.
 - TypeScript and TSX source files included by that project configuration.
-- Vue single-file components included by that same configuration, for read-only referrer
-  discovery only. Supported blocks are `<script lang="ts">`, `<script setup lang="ts">`,
-  `<script lang="tsx">`, and `<script setup lang="tsx">`. Templates, styles, and other SFC
-  content are not analyzed as TypeScript.
+- Vue single-file components included by that same configuration. Supported blocks are
+  `<script lang="ts">`, `<script setup lang="ts">`, `<script lang="tsx">`, and
+  `<script setup lang="tsx">`. Referrers in those blocks can receive a specifier-only import
+  update. Templates, styles, and other SFC content are not analyzed as TypeScript and are not
+  rewritten.
 - Exported `type` aliases and `interface` declarations.
 - Existing relative module specifiers, configured path aliases, and simple barrel exports when their
   relationships can be resolved safely.
 
 The project-local TypeScript compiler is used for final validation. A project should therefore have
-TypeScript available in its dependencies before an apply operation.
+TypeScript available in its dependencies before an apply operation. Moves that change a `.vue`
+file also require `vue-tsc`, because `tsc` does not typecheck single-file components.
 
 ## Scan requirements
 
@@ -42,8 +44,10 @@ silently disappearing from the report.
 A used type import inside a supported Vue script block counts as one referrer file, including
 `defineProps<T>()` and `defineEmits<T>()` type arguments. Unused imports do not count. Relative
 specifiers and configured TypeScript aliases resolve with the same rules as `.ts` files. The count
-is deterministic and unique per file. These Vue paths are reported as read-only referrers. They do
-not receive an import rewrite strategy.
+is deterministic and unique per file. These Vue paths are reported separately from writable
+TypeScript strategies. A direct relative or alias type import can receive a specifier-only update.
+Barrel imports, namespace imports, and statements that also bind a symbol that is not moving are
+reported as blockers and are not edited.
 
 If a selected `.vue` file cannot be parsed reliably — for example an unclosed script, a script
 without `lang="ts"` or `lang="tsx"`, an external `src` script, or a script with syntax errors —
@@ -79,8 +83,13 @@ For accepted entries, the rewrite must:
 - update type-only imports using the resolved relative, alias, or barrel strategy;
 - retain type-only compatibility re-exports when required to preserve unresolved star-barrel,
   external-package, or unscanned non-TypeScript imports;
-- reject the move before writing files when a counted Vue referrer would need an import update,
-  or when any selected Vue file could not be analyzed. Vue import rewriting is not supported yet.
+- update a supported Vue script import by replacing only its module specifier, leaving template,
+  style, and every other byte unchanged;
+- reject the move before writing files when a Vue import is not a direct specifier update, or when
+  any selected Vue file could not be analyzed;
+- after `tsc` succeeds, run `vue-tsc --noEmit --project` when a `.vue` file changed. `tsc` does not
+  typecheck single-file components. If `vue-tsc` is missing or reports an error, roll the
+  transaction back. Dry-run uses the same validation and then restores the files.
 - validate the resulting project with TypeScript;
 - restore every touched file when validation or the transaction fails.
 
