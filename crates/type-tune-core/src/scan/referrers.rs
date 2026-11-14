@@ -38,6 +38,12 @@ enum ReferrerImportStyle {
     Relative(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VueBlockReason {
+    Indirect,
+    NamespaceOrDefault,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn scan_parsed_project_files_with_aliases(
     parsed_files: Vec<AnalyzedSource>,
@@ -73,7 +79,7 @@ pub(super) fn scan_parsed_project_files_with_aliases(
     )?;
     let mut referrer_styles = HashMap::new();
     let mut vue_referrer_styles = HashMap::new();
-    let mut vue_blockers = HashSet::new();
+    let mut vue_blockers = HashMap::new();
     for file in &parsed_files {
         let referrer_path = &file.path;
         let parsed_source = &file.parsed;
@@ -175,12 +181,28 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                             path: referrer_path.clone(),
                             reason: READONLY_REFERRER_VUE_SFC.to_owned(),
                         });
-                        if matches!(
+                        let unsupported_binding = import.is_namespace
+                            || import.is_default
+                            || imports.iter().any(|other| {
+                                other.statement_start == import.statement_start
+                                    && (other.is_namespace || other.is_default)
+                            });
+                        if unsupported_binding {
+                            record_vue_blocker(
+                                &mut vue_blockers,
+                                style_key,
+                                VueBlockReason::NamespaceOrDefault,
+                            );
+                        } else if matches!(
                             style,
                             ReferrerImportStyle::Barrel { .. }
                                 | ReferrerImportStyle::NamespaceRelative
                         ) {
-                            vue_blockers.insert(style_key);
+                            record_vue_blocker(
+                                &mut vue_blockers,
+                                style_key,
+                                VueBlockReason::Indirect,
+                            );
                         } else {
                             vue_referrer_styles.insert(style_key, style);
                         }
@@ -245,7 +267,7 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                         reason: READONLY_REFERRER_VUE_SFC.to_owned(),
                     });
                     if barrel_import {
-                        vue_blockers.insert(style_key);
+                        record_vue_blocker(&mut vue_blockers, style_key, VueBlockReason::Indirect);
                     } else {
                         vue_referrer_styles.entry(style_key).or_insert(
                             ReferrerImportStyle::Relative(module_specifier_extension(
@@ -318,12 +340,13 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                 candidate.symbol_name.clone(),
                 referrer.path.clone(),
             );
-            if vue_blockers.contains(&style_key) {
+            if let Some(reason) = vue_blockers.get(&style_key) {
                 candidate.vue_rewrite_blockers.push(VueRewriteBlocker {
                     path: referrer.path.clone(),
-                    message: format!(
-                        "Cannot update Vue referrer {} for {} because the import is not a direct relative or alias specifier. Vue barrel and namespace-barrel updates are not supported yet.",
-                        referrer.path, candidate.symbol_name
+                    message: vue_blocker_message(
+                        referrer.path.as_str(),
+                        &candidate.symbol_name,
+                        *reason,
                     ),
                 });
                 continue;
@@ -356,6 +379,32 @@ pub(super) fn scan_parsed_project_files_with_aliases(
         candidate.destination_index_path = destination_index_path(&candidate.referrer_strategies);
     }
     Ok(candidates)
+}
+
+fn record_vue_blocker(
+    blockers: &mut HashMap<(String, String, String), VueBlockReason>,
+    key: (String, String, String),
+    reason: VueBlockReason,
+) {
+    blockers
+        .entry(key)
+        .and_modify(|existing| {
+            if reason == VueBlockReason::NamespaceOrDefault {
+                *existing = reason;
+            }
+        })
+        .or_insert(reason);
+}
+
+fn vue_blocker_message(path: &str, symbol_name: &str, reason: VueBlockReason) -> String {
+    match reason {
+        VueBlockReason::NamespaceOrDefault => format!(
+            "Cannot update Vue referrer {path} for {symbol_name} because the import is a namespace or default import. Only a direct named relative or alias specifier can be updated."
+        ),
+        VueBlockReason::Indirect => format!(
+            "Cannot update Vue referrer {path} for {symbol_name} because the import is not a direct relative or alias specifier. Vue barrel and namespace-barrel updates are not supported yet."
+        ),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
