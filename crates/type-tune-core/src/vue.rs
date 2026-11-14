@@ -246,7 +246,7 @@ fn script_limitation(path: &str, tag: &StartTag) -> Option<AnalysisLimitation> {
     if tag.attributes.iter().any(|(name, _)| name == "src") {
         return Some(limitation(
             path,
-            "it uses an external <script src> block, which Phase 1 does not inline",
+            "it uses an external <script src> block, which type-tune does not inline",
         ));
     }
     let langs = tag
@@ -319,7 +319,7 @@ fn limitation(path: &str, detail: &str) -> AnalysisLimitation {
         path: path.to_owned(),
         reason: ANALYSIS_LIMITATION_UNRESOLVED_VUE.to_owned(),
         message: format!(
-            "{path} could not be analyzed: {detail}. type-tune did not treat this component as a non-referrer. Vue rewriting is not supported yet."
+            "{path} could not be analyzed: {detail}. type-tune did not treat this component as a non-referrer. The component stays unresolved, so this scan cannot safely move any candidate. Correct the unsupported script, or exclude the component from the project and regenerate the plan."
         ),
     }
 }

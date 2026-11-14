@@ -199,10 +199,21 @@ pub(crate) fn run_apply() -> ExitCode {
             }
         }
     }
+    // Plan freshness uses every entry, including ignored candidates. Rewrite planning must not.
+    // `plan_rewrite` rejects a Vue file that is not a script-strategy target of the candidates it
+    // receives, so Vue files that belong only to ignored entries have to stay out of this map.
+    let rewrite_sources =
+        match read_rewrite_sources(Path::new(&plan.project_path), &apply_candidates) {
+            Ok(sources) => sources,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        };
     let changes = match plan_extraction_rewrite(
         &config,
         &apply_candidates,
-        &sources,
+        &rewrite_sources,
         type_tune_core::rewrite::CompatibilityReexportQuoteStyle::Apply,
     ) {
         Ok(changes) => changes,

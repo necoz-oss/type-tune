@@ -45,6 +45,8 @@ pub(super) fn plan_rewrite(
     options: RewriteOptions<'_>,
 ) -> Result<BTreeMap<String, String>> {
     crate::source_role::reject_unsupported_rewrite(candidates)?;
+    // Vue files that are not script-strategy targets of these candidates stay out of the writable
+    // TypeScript pipeline. Callers must omit Vue files that belong only to ignored plan entries.
     let vue_targets = candidates
         .iter()
         .flat_map(|candidate| candidate.vue_script_strategies.iter())
