@@ -111,7 +111,7 @@ pub fn validate_vue_script_edits(
     match run_vue_compiler(project_root, project_path) {
         Ok(()) => Ok(()),
         Err(CompilerFailure::Launch { compiler, error }) => Err(format!(
-            "Vue script edits require vue-tsc, but {} could not be started: {error}. Install vue-tsc to validate .vue files. The rewrite was rolled back.",
+            "Vue script edits require vue-tsc, but {} could not be started: {error}. Install vue-tsc to validate .vue files.",
             compiler.display()
         )),
         Err(CompilerFailure::Diagnostics { output, .. }) => {
