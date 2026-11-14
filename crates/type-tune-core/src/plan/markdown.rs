@@ -179,12 +179,27 @@ pub fn render_plan_markdown(plan: &PlanFile) -> String {
             )
         }));
         if !candidate.readonly_referrers.is_empty() {
-            lines.push("  - read-only referrers:".into());
+            lines.push("  - vue script referrers:".into());
             lines.extend(candidate.readonly_referrers.iter().map(|referrer| {
-                format!(
-                    "    - `{}`: Vue script usage; rewriting is not supported",
-                    referrer.path
-                )
+                if let Some(strategy) = candidate
+                    .vue_script_strategies
+                    .iter()
+                    .find(|strategy| strategy.referrer_path == referrer.path)
+                {
+                    format!(
+                        "    - `{}`: {}",
+                        referrer.path,
+                        render_strategy(&strategy.strategy)
+                    )
+                } else if let Some(blocker) = candidate
+                    .vue_rewrite_blockers
+                    .iter()
+                    .find(|blocker| blocker.path == referrer.path)
+                {
+                    format!("    - `{}`: {}", referrer.path, blocker.message)
+                } else {
+                    format!("    - `{}`: Vue script usage", referrer.path)
+                }
             }));
         }
         if !candidate.analysis_limitations.is_empty() {

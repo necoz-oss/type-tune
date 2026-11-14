@@ -35,9 +35,18 @@ pub struct Candidate {
     pub local_dependency_declaration_keys: Vec<String>,
     /// Import update strategy for every writable referrer path.
     pub referrer_strategies: Vec<ReferrerStrategy>,
-    /// Referrers discovered by read-only analysis. These files are counted and never rewritten.
+    /// Vue and other referrers counted outside the writable TypeScript strategy list.
+    ///
+    /// Supported Vue script referrers are paired with [`Self::vue_script_strategies`]. They are
+    /// not rewritten by the TypeScript pipeline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub readonly_referrers: Vec<ReadOnlyReferrer>,
+    /// Specifier-only updates for supported Vue script blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vue_script_strategies: Vec<ReferrerStrategy>,
+    /// Counted Vue referrers whose imports cannot be updated by a specifier replacement.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vue_rewrite_blockers: Vec<VueRewriteBlocker>,
     /// Project-wide analysis gaps that make rewriting any of these candidates unsafe.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub analysis_limitations: Vec<AnalysisLimitation>,
@@ -94,7 +103,7 @@ pub const READONLY_REFERRER_VUE_SFC: &str = "vueSfc";
 /// Machine-readable reason for a Vue SFC that could not be analyzed safely.
 pub const ANALYSIS_LIMITATION_UNRESOLVED_VUE: &str = "unresolvedVueSfc";
 
-/// A referrer that contributes to scan counts and cannot be edited by the current rewrite pipeline.
+/// A referrer counted outside the writable TypeScript strategy list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadOnlyReferrer {
@@ -102,6 +111,16 @@ pub struct ReadOnlyReferrer {
     pub path: String,
     /// Stable reason code. Vue script usage uses [`READONLY_REFERRER_VUE_SFC`].
     pub reason: String,
+}
+
+/// A counted Vue referrer that cannot be updated safely.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VueRewriteBlocker {
+    /// Project-relative Vue file path.
+    pub path: String,
+    /// Why the script import cannot be rewritten.
+    pub message: String,
 }
 
 /// A source that could not be analyzed reliably enough to treat as a non-referrer.
@@ -205,6 +224,8 @@ mod tests {
                 local_dependency_declaration_keys: vec![],
                 referrer_strategies: vec![],
                 readonly_referrers: vec![],
+                vue_script_strategies: vec![],
+                vue_rewrite_blockers: vec![],
                 analysis_limitations: vec![],
                 destination_index_path: None,
             }],

@@ -108,9 +108,15 @@ pub struct AiReviewCandidateContext {
     pub local_dependency_names: Vec<String>,
     /// Import strategy selected for each writable referrer.
     pub referrer_strategies: Vec<crate::model::ReferrerStrategy>,
-    /// Referrers counted by read-only analysis and excluded from rewriting.
+    /// Referrers counted outside the writable TypeScript strategy list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub readonly_referrers: Vec<crate::model::ReadOnlyReferrer>,
+    /// Specifier updates planned inside Vue script blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vue_script_strategies: Vec<crate::model::ReferrerStrategy>,
+    /// Vue referrers that block a move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vue_rewrite_blockers: Vec<crate::model::VueRewriteBlocker>,
     /// Analysis gaps that make rewriting this candidate unsafe.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub analysis_limitations: Vec<crate::model::AnalysisLimitation>,

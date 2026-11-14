@@ -18,6 +18,7 @@ mod referrers;
 mod resolution;
 mod source;
 mod validation;
+mod vue_scripts;
 
 pub use options::{CompatibilityReexportQuoteStyle, RewriteOptions};
 

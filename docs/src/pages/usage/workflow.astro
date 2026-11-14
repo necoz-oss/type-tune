@@ -125,9 +125,12 @@ import TextLink from "../../shared/ui/text-link.astro";
         does not rewrite.
       </p>
       <p>
-        A move that would update a Vue script referrer, or that encounters a Vue file type-tune
-        could not analyze, is rejected before any file is written. <code>--dry-run</code> uses that
-        same gate. A normal TypeScript failure rolls the file changes back. <code>--dry-run</code>
+        A supported Vue script import can have its module specifier updated. A Vue file type-tune
+        could not analyze, or a Vue import that is not a direct specifier change, is rejected
+        before any file is written. When a <code>.vue</code> file changes, validation also runs
+        <code>vue-tsc</code> and rolls back if that check is unavailable or fails.
+        <code>--dry-run</code> uses that same gate. A normal TypeScript failure rolls the file
+        changes back. <code>--dry-run</code>
         performs the same write and validation, then restores the files when that process finishes
         normally.
         Killing the process, or editing the same files at the same time, is outside that guarantee.
@@ -135,9 +138,10 @@ import TextLink from "../../shared/ui/text-link.astro";
         restored.
       </p>
       <Callout>
-        <code>tsc</code> does not typecheck Vue, Svelte, or Astro files, and it does not see
-        consumers outside this project. Run those builds and tests after a move. Formatter-clean
-        output is not guaranteed.
+        <code>tsc</code> does not typecheck Vue, Svelte, or Astro files. Vue script edits are
+        checked with <code>vue-tsc</code> when a <code>.vue</code> file changes. Neither compiler
+        sees consumers outside this project. Run those builds and tests after a move.
+        Formatter-clean output is not guaranteed.
       </Callout>
     </section>
 

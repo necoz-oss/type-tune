@@ -59,11 +59,16 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_type-tune"))
-            .current_dir(&self.0)
-            .args(args)
-            .output()
-            .unwrap()
+        self.run_with_path(args, None)
+    }
+
+    fn run_with_path(&self, args: &[&str], path: Option<&str>) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_type-tune"));
+        command.current_dir(&self.0).args(args);
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        command.output().unwrap()
     }
 }
 
@@ -76,7 +81,7 @@ fn output_text(output: &Output) -> String {
 }
 
 #[test]
-fn scan_reports_vue_referrers_and_apply_rejects_without_writing() {
+fn scan_reports_vue_referrers_and_apply_updates_script_specifiers() {
     let fixture = Fixture::new();
     let scan = fixture.run(&[
         "scan",
@@ -120,10 +125,7 @@ fn scan_reports_vue_referrers_and_apply_rejects_without_writing() {
     assert!(plan.status.success(), "{}", output_text(&plan));
     let markdown = fs::read_to_string(fixture.0.join("plan.md")).unwrap();
     assert!(markdown.contains("src/Card.vue"), "{markdown}");
-    assert!(
-        markdown.contains("rewriting is not supported"),
-        "{markdown}"
-    );
+    assert!(markdown.contains("vue script referrers"), "{markdown}");
     let plan_json: serde_json::Value =
         serde_json::from_slice(&fs::read(fixture.0.join("plan.json")).unwrap()).unwrap();
     let user = plan_json["entries"]
@@ -144,7 +146,32 @@ fn scan_reports_vue_referrers_and_apply_rejects_without_writing() {
     );
     fixture.write("plan.md", &reviewed);
 
+    write_compiler_stub(&fixture.0, "tsc", "#!/bin/sh\nexit 0\n");
+    write_compiler_stub(
+        &fixture.0,
+        "vue-tsc",
+        "#!/bin/sh\necho 'Card.vue(4,1): error TS2322: bad' >&2\nexit 1\n",
+    );
     let before = fixture.snapshot();
+    let failed = fixture.run_with_path(
+        &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+        Some(""),
+    );
+    assert!(!failed.status.success(), "{}", output_text(&failed));
+    let failed_text = output_text(&failed);
+    assert!(
+        failed_text.contains("vue-tsc validation failed"),
+        "{failed_text}"
+    );
+    assert!(
+        failed_text.contains("rolled back file changes"),
+        "{failed_text}"
+    );
+    assert!(failed_text.contains("TS2322"), "{failed_text}");
+    assert_eq!(fixture.snapshot(), before);
+    assert!(!fixture.0.join("src/domain").exists());
+
+    write_compiler_stub(&fixture.0, "vue-tsc", "#!/bin/sh\nexit 0\n");
     let dry_run = fixture.run(&[
         "apply",
         "--plan",
@@ -153,19 +180,7 @@ fn scan_reports_vue_referrers_and_apply_rejects_without_writing() {
         "plan.md",
         "--dry-run",
     ]);
-    assert!(!dry_run.status.success(), "{}", output_text(&dry_run));
-    let dry_text = output_text(&dry_run);
-    assert!(
-        dry_text.contains("Vue rewriting is not supported yet"),
-        "{dry_text}"
-    );
-    assert!(dry_text.contains("src/Card.vue"), "{dry_text}");
-    assert_eq!(fixture.snapshot(), before);
-    assert!(!fixture.0.join("src/domain").exists());
-
-    let apply = fixture.run(&["apply", "--plan", "plan.json", "--markdown", "plan.md"]);
-    assert!(!apply.status.success(), "{}", output_text(&apply));
-    assert!(output_text(&apply).contains("before any files were changed"));
+    assert!(dry_run.status.success(), "{}", output_text(&dry_run));
     assert_eq!(fixture.snapshot(), before);
     assert!(!fixture.0.join("src/domain").exists());
 
@@ -180,9 +195,31 @@ fn scan_reports_vue_referrers_and_apply_rejects_without_writing() {
         "tsconfig.json",
         "--dry-run",
     ]);
-    assert!(!extract.status.success(), "{}", output_text(&extract));
-    assert!(output_text(&extract).contains("Vue rewriting is not supported yet"));
+    assert!(extract.status.success(), "{}", output_text(&extract));
     assert_eq!(fixture.snapshot(), before);
+
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--markdown", "plan.md"]);
+    assert!(apply.status.success(), "{}", output_text(&apply));
+    let vue = fs::read_to_string(fixture.0.join("src/Card.vue")).unwrap();
+    assert!(vue.contains("<template><p>User</p></template>\n"), "{vue}");
+    assert!(vue.contains("<style>/* User */</style>\n"), "{vue}");
+    assert!(vue.contains("\"./domain/user\""), "{vue}");
+    assert!(!vue.contains("\"./model\""), "{vue}");
+    assert!(fixture.0.join("src/domain/user.ts").is_file());
+}
+
+fn write_compiler_stub(root: &std::path::Path, name: &str, body: &str) {
+    let directory = root.join("node_modules/.bin");
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(name);
+    fs::write(&path, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
 }
 
 #[test]
@@ -336,4 +373,92 @@ fn unresolved_vue_file_blocks_an_otherwise_safe_move_without_writing() {
         );
         assert!(!fixture.0.join("src/domain").exists());
     }
+}
+
+#[test]
+fn missing_vue_tsc_rolls_back_a_vue_edit_and_typescript_only_moves_do_not_need_it() {
+    let fixture = Fixture::new();
+    let plan = fixture.run(&[
+        "plan",
+        "--project",
+        "tsconfig.json",
+        "--out",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--min-referrers",
+        "2",
+    ]);
+    assert!(plan.status.success(), "{}", output_text(&plan));
+    select_user(&fixture, "src/domain/user.ts");
+    write_compiler_stub(&fixture.0, "tsc", "#!/bin/sh\nexit 0\n");
+    assert!(!fixture.0.join("node_modules/.bin/vue-tsc").exists());
+    let before = fixture.snapshot();
+
+    let missing = fixture.run_with_path(
+        &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+        Some(""),
+    );
+    assert!(!missing.status.success(), "{}", output_text(&missing));
+    let text = output_text(&missing);
+    assert!(text.contains("Vue script edits require vue-tsc"), "{text}");
+    assert!(text.contains("could not be started"), "{text}");
+    assert!(text.contains("rolled back"), "{text}");
+    assert_eq!(fixture.snapshot(), before);
+    assert!(!fixture.0.join("src/domain").exists());
+
+    let typescript_only = Fixture::new();
+    typescript_only.write(
+        "src/Card.vue",
+        "<script setup lang=\"ts\">\nconst label = \"unused\";\n</script>\n",
+    );
+    let plan = typescript_only.run(&[
+        "plan",
+        "--project",
+        "tsconfig.json",
+        "--out",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--min-referrers",
+        "2",
+    ]);
+    assert!(plan.status.success(), "{}", output_text(&plan));
+    select_user(&typescript_only, "src/domain/user.ts");
+    write_compiler_stub(&typescript_only.0, "tsc", "#!/bin/sh\nexit 0\n");
+    let vue_before = fs::read(typescript_only.0.join("src/Card.vue")).unwrap();
+    let applied = typescript_only.run_with_path(
+        &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+        Some(""),
+    );
+    assert!(applied.status.success(), "{}", output_text(&applied));
+    assert!(typescript_only.0.join("src/domain/user.ts").is_file());
+    assert_eq!(
+        fs::read(typescript_only.0.join("src/Card.vue")).unwrap(),
+        vue_before
+    );
+}
+
+fn select_user(fixture: &Fixture, destination: &str) {
+    let markdown = fs::read_to_string(fixture.0.join("plan.md")).unwrap();
+    let plan_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.0.join("plan.json")).unwrap()).unwrap();
+    let user = plan_json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["candidate"]["symbolName"] == "User")
+        .unwrap();
+    let id = user["candidate"]["id"].as_str().unwrap();
+    let current = user["candidate"]["destinationPath"].as_str().unwrap();
+    let reviewed = markdown
+        .replace(
+            &format!("- [ignore] {id} `User`"),
+            &format!("- [apply] {id} `User`"),
+        )
+        .replace(
+            &format!("  - to: `{current}`"),
+            &format!("  - to: `{destination}`"),
+        );
+    fixture.write("plan.md", &reviewed);
 }

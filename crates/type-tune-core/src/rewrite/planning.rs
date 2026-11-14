@@ -45,11 +45,21 @@ pub(super) fn plan_rewrite(
     options: RewriteOptions<'_>,
 ) -> Result<BTreeMap<String, String>> {
     crate::source_role::reject_unsupported_rewrite(candidates)?;
+    let vue_targets = candidates
+        .iter()
+        .flat_map(|candidate| candidate.vue_script_strategies.iter())
+        .map(|strategy| strategy.referrer_path.as_str())
+        .collect::<BTreeSet<_>>();
     if let Some(path) = sources.keys().find(|path| {
-        crate::source_role::source_role(path) != crate::source_role::SourceRole::WritableTypeScript
+        let role = crate::source_role::source_role(path);
+        if role == crate::source_role::SourceRole::ReadOnlyVue {
+            !vue_targets.contains(path.as_str())
+        } else {
+            role != crate::source_role::SourceRole::WritableTypeScript
+        }
     }) {
         return Err(TypeTuneError::new(format!(
-            "Vue rewriting is not supported yet. Refusing to treat {path} as a writable TypeScript source. Apply was rejected before any files were changed."
+            "Refusing to treat {path} as a writable TypeScript source. Apply was rejected before any files were changed."
         )));
     }
     let inputs = prepare_rewrite_inputs(candidates, sources, options)?;
@@ -62,6 +72,9 @@ pub(super) fn plan_rewrite(
     destinations.render(inputs.sources, &mut output);
     plan_remaining_referrer_edits(&inputs, &merged_referrer_import_ranges, &mut edits_by_path)?;
     apply_planned_edits(&inputs, edits_by_path, &mut output)?;
+    output.extend(super::vue_scripts::plan_vue_script_rewrites(
+        candidates, sources, options,
+    )?);
     Ok(output)
 }
 
@@ -74,6 +87,7 @@ fn prepare_rewrite_inputs<'a>(
     let groups = group_candidates(candidates)?;
     let parsed_sources = sources
         .keys()
+        .filter(|path| !crate::source_role::is_vue_sfc_path(path))
         .cloned()
         .map(|path| {
             let source = sources

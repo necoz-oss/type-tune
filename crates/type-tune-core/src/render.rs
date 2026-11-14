@@ -349,6 +349,8 @@ mod tests {
             local_dependency_declaration_keys: vec![],
             referrer_strategies: vec![],
             readonly_referrers: vec![],
+            vue_script_strategies: vec![],
+            vue_rewrite_blockers: vec![],
             analysis_limitations: vec![],
             destination_index_path: None,
         };
@@ -378,6 +380,8 @@ mod tests {
             local_dependency_declaration_keys: vec![],
             referrer_strategies: vec![],
             readonly_referrers: vec![],
+            vue_script_strategies: vec![],
+            vue_rewrite_blockers: vec![],
             analysis_limitations: vec![],
             destination_index_path: None,
         };
@@ -421,6 +425,8 @@ mod tests {
                 },
             }],
             readonly_referrers: vec![],
+            vue_script_strategies: vec![],
+            vue_rewrite_blockers: vec![],
             analysis_limitations: vec![],
             destination_index_path: None,
         };

@@ -19,7 +19,14 @@ pub(crate) fn preview_changes(
     let validation = type_tune_core::compiler::validate_typescript_project_diagnostics(
         project_root,
         compiler_project,
-    );
+    )
+    .and_then(|()| {
+        type_tune_core::compiler::validate_vue_script_edits(
+            project_root,
+            compiler_project,
+            changes.keys(),
+        )
+    });
     let rollback = transaction.rollback();
     match (validation, rollback) {
         (Ok(()), Ok(())) => Ok(()),

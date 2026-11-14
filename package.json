@@ -29,6 +29,7 @@
   "scripts": {
     "build": "mise exec rust@stable -- cargo build --release --workspace",
     "test": "mise exec rust@stable -- cargo test --workspace",
+    "test:vue-tsc": "mise exec rust@stable -- cargo test --test vue_tsc_apply -- --ignored --nocapture",
     "verify:movement": "pnpm build && node scripts/verify-movement-fixture.mjs",
     "check": "mise exec rust@stable -- cargo fmt --check && mise exec rust@stable -- cargo clippy --workspace -- -D warnings && pnpm test && pnpm build && pnpm compatibility:check",
     "compatibility:check": "node scripts/compatibility-fixtures.mjs",
@@ -44,7 +45,9 @@
   },
   "devDependencies": {
     "lefthook": "^2.1.8",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "vue": "3.5.45",
+    "vue-tsc": "3.3.14"
   },
   "optionalDependencies": {
     "@type-tune/darwin-arm64": "1.0.2",

@@ -83,6 +83,8 @@ fn build_candidate_context(
         local_dependency_names: candidate.local_dependency_names.clone(),
         referrer_strategies: candidate.referrer_strategies.clone(),
         readonly_referrers: candidate.readonly_referrers.clone(),
+        vue_script_strategies: candidate.vue_script_strategies.clone(),
+        vue_rewrite_blockers: candidate.vue_rewrite_blockers.clone(),
         analysis_limitations: candidate.analysis_limitations.clone(),
         source_fingerprint: entry.source_fingerprint.clone(),
         source_context_bytes: None,

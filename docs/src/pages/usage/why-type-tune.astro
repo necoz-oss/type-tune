@@ -114,8 +114,9 @@ import TextLink from "../../shared/ui/text-link.astro";
       <Callout>
         JavaScript included through <code>allowJs</code>, <code>.svelte</code>, <code>.astro</code>,
         and external package consumers are not scanned or rewritten. <code>.vue</code> files can
-        contribute read-only TypeScript referrers from supported script blocks; they are not
-        rewritten, and moves that would require a Vue edit are rejected. Compatibility re-exports
+        contribute TypeScript referrers from supported script blocks. A move can update those
+        import specifiers and then relies on <code>vue-tsc</code> to typecheck the component.
+        Compatibility re-exports
         still preserve the original module path for consumers the scan does not rewrite, but you
         should still run framework builds and consumer tests after applying a move.
       </Callout>

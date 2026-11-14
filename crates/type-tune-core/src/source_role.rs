@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     Result, TypeTuneError,
-    model::{ANALYSIS_LIMITATION_UNRESOLVED_VUE, Candidate, READONLY_REFERRER_VUE_SFC},
+    model::{ANALYSIS_LIMITATION_UNRESOLVED_VUE, Candidate},
 };
 
 /// Whether the rewrite pipeline may edit a project file.
@@ -44,12 +44,15 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Rejects a rewrite that would edit a Vue file or ignore an unanalyzed Vue component.
+/// Rejects a rewrite that would edit an unsupported Vue file or ignore an unanalyzed component.
+///
+/// Supported Vue referrers must have a specifier-only script strategy. Unresolved components,
+/// indirect imports, Vue declaration sources, and Vue paths in the writable strategy list fail
+/// before any edit is constructed.
 ///
 /// # Errors
 ///
-/// Returns an error before any rewrite edit is constructed when a selected candidate has a Vue
-/// referrer, a Vue source path, a Vue strategy path, or an unresolved Vue analysis limitation.
+/// Returns an error when a selected candidate cannot be rewritten without an unsafe Vue edit.
 pub(crate) fn reject_unsupported_rewrite(candidates: &[Candidate]) -> Result<()> {
     let mut messages = BTreeSet::new();
     for candidate in candidates {
@@ -60,24 +63,34 @@ pub(crate) fn reject_unsupported_rewrite(candidates: &[Candidate]) -> Result<()>
             ));
         }
         for referrer in &candidate.readonly_referrers {
-            if referrer.reason == READONLY_REFERRER_VUE_SFC
-                || source_role(&referrer.path) == SourceRole::ReadOnlyVue
-            {
+            let planned = candidate
+                .vue_script_strategies
+                .iter()
+                .any(|strategy| strategy.referrer_path == referrer.path);
+            let blocked = candidate
+                .vue_rewrite_blockers
+                .iter()
+                .any(|blocker| blocker.path == referrer.path);
+            if !planned && !blocked {
                 messages.insert(format!(
-                    "Cannot update read-only Vue referrer {} for {}. The component uses this type in a TypeScript script block, and Vue import rewriting is not supported yet.",
+                    "Cannot update Vue referrer {} for {} because it has no script import strategy. Regenerate the plan.",
                     referrer.path, candidate.symbol_name
                 ));
-            } else {
+            }
+            if source_role(&referrer.path) != SourceRole::ReadOnlyVue {
                 messages.insert(format!(
                     "Cannot update read-only referrer {} for {} ({}).",
                     referrer.path, candidate.symbol_name, referrer.reason
                 ));
             }
         }
+        for blocker in &candidate.vue_rewrite_blockers {
+            messages.insert(blocker.message.clone());
+        }
         for strategy in &candidate.referrer_strategies {
             if source_role(&strategy.referrer_path) != SourceRole::WritableTypeScript {
                 messages.insert(format!(
-                    "Cannot rewrite {} for {} because Vue import rewriting is not supported yet.",
+                    "Cannot rewrite {} for {} because that path is not a writable TypeScript source.",
                     strategy.referrer_path, candidate.symbol_name
                 ));
             }
@@ -87,8 +100,25 @@ pub(crate) fn reject_unsupported_rewrite(candidates: &[Candidate]) -> Result<()>
                 && source_role(barrel_file_path) != SourceRole::WritableTypeScript
             {
                 messages.insert(format!(
-                    "Cannot rewrite Vue barrel {barrel_file_path} for {} because Vue import rewriting is not supported yet.",
+                    "Cannot rewrite Vue barrel {barrel_file_path} for {} because Vue barrel updates are not supported yet.",
                     candidate.symbol_name
+                ));
+            }
+        }
+        for strategy in &candidate.vue_script_strategies {
+            if source_role(&strategy.referrer_path) != SourceRole::ReadOnlyVue {
+                messages.insert(format!(
+                    "Cannot apply Vue script strategy for {} to {}.",
+                    candidate.symbol_name, strategy.referrer_path
+                ));
+            }
+            if matches!(
+                strategy.strategy,
+                crate::model::ImportStrategy::Barrel { .. }
+            ) {
+                messages.insert(format!(
+                    "Cannot update Vue referrer {} for {} with a barrel strategy.",
+                    strategy.referrer_path, candidate.symbol_name
                 ));
             }
         }
@@ -103,13 +133,10 @@ pub(crate) fn reject_unsupported_rewrite(candidates: &[Candidate]) -> Result<()>
     if messages.is_empty() {
         return Ok(());
     }
-    let mut lines = vec![
-        "Vue rewriting is not supported yet. Apply was rejected before any files were changed."
-            .to_owned(),
-    ];
+    let mut lines = vec!["Apply was rejected before any files were changed.".to_owned()];
     lines.extend(messages);
     lines.push(
-        "Fix or exclude the Vue component and regenerate the plan. Framework-specific validation is still future work."
+        "Fix or exclude the Vue component and regenerate the plan. vue-tsc validates supported script edits after they are planned."
             .to_owned(),
     );
     Err(TypeTuneError::new(lines.join("\n")))

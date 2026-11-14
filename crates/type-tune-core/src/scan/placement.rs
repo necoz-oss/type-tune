@@ -56,81 +56,107 @@ pub fn override_candidate_destination(
         .referrer_strategies
         .into_iter()
         .map(|referrer| {
-            let extension = match &referrer.strategy {
-                ImportStrategy::Alias { module_specifier }
-                | ImportStrategy::Relative { module_specifier } => {
-                    preserved_module_specifier_extension(module_specifier)
-                        .unwrap_or("")
-                        .to_owned()
-                }
-                ImportStrategy::Barrel {
-                    export_module_specifier,
-                    ..
-                } => preserved_module_specifier_extension(export_module_specifier)
-                    .unwrap_or("")
-                    .to_owned(),
-            };
-            let strategy = match referrer.strategy {
-                ImportStrategy::Barrel {
-                    barrel_file_path,
-                    export_module_specifier,
-                } => {
-                    let export_module_specifier =
-                        if is_relative_module_specifier(&export_module_specifier) {
-                            relative_module_specifier_with_extension(
-                                &barrel_file_path,
-                                &candidate.destination_path,
-                                &extension,
-                            )
-                        } else {
-                            module_specifier_preserving_alias(
-                                &barrel_file_path,
-                                &candidate.destination_path,
-                                &extension,
-                                &export_module_specifier,
-                                base_url,
-                                path_aliases,
-                            )
-                        };
-                    ImportStrategy::Barrel {
-                        export_module_specifier,
-                        barrel_file_path,
-                    }
-                }
-                ImportStrategy::Alias { module_specifier } => {
-                    let alias_extension =
-                        preserved_module_specifier_extension(&module_specifier).unwrap_or("");
-                    resolve_alias_module_specifier_from(
-                        &candidate.destination_path,
-                        base_url,
-                        path_aliases,
-                        Some(&module_specifier),
-                    )
-                    .map(|module_specifier| ImportStrategy::Alias {
-                        module_specifier: format!("{module_specifier}{alias_extension}"),
-                    })
-                    .unwrap_or_else(|| ImportStrategy::Relative {
-                        module_specifier: relative_module_specifier_with_extension(
-                            &referrer.referrer_path,
-                            &candidate.destination_path,
-                            &extension,
-                        ),
-                    })
-                }
-                ImportStrategy::Relative { .. } => ImportStrategy::Relative {
-                    module_specifier: relative_module_specifier_with_extension(
-                        &referrer.referrer_path,
-                        &candidate.destination_path,
-                        &extension,
-                    ),
-                },
-            };
-            ReferrerStrategy {
-                referrer_path: referrer.referrer_path,
-                strategy,
-            }
+            retarget_referrer(
+                referrer,
+                &candidate.destination_path,
+                base_url,
+                path_aliases,
+            )
+        })
+        .collect();
+    candidate.vue_script_strategies = candidate
+        .vue_script_strategies
+        .into_iter()
+        .map(|referrer| {
+            retarget_referrer(
+                referrer,
+                &candidate.destination_path,
+                base_url,
+                path_aliases,
+            )
         })
         .collect();
     candidate.destination_index_path = destination_index_path(&candidate.referrer_strategies);
     candidate
+}
+
+fn retarget_referrer(
+    referrer: ReferrerStrategy,
+    destination_path: &str,
+    base_url: Option<&str>,
+    path_aliases: &BTreeMap<String, Vec<String>>,
+) -> ReferrerStrategy {
+    let extension = match &referrer.strategy {
+        ImportStrategy::Alias { module_specifier }
+        | ImportStrategy::Relative { module_specifier } => {
+            preserved_module_specifier_extension(module_specifier)
+                .unwrap_or("")
+                .to_owned()
+        }
+        ImportStrategy::Barrel {
+            export_module_specifier,
+            ..
+        } => preserved_module_specifier_extension(export_module_specifier)
+            .unwrap_or("")
+            .to_owned(),
+    };
+    let strategy = match referrer.strategy {
+        ImportStrategy::Barrel {
+            barrel_file_path,
+            export_module_specifier,
+        } => {
+            let export_module_specifier = if is_relative_module_specifier(&export_module_specifier)
+            {
+                relative_module_specifier_with_extension(
+                    &barrel_file_path,
+                    destination_path,
+                    &extension,
+                )
+            } else {
+                module_specifier_preserving_alias(
+                    &barrel_file_path,
+                    destination_path,
+                    &extension,
+                    &export_module_specifier,
+                    base_url,
+                    path_aliases,
+                )
+            };
+            ImportStrategy::Barrel {
+                export_module_specifier,
+                barrel_file_path,
+            }
+        }
+        ImportStrategy::Alias { module_specifier } => {
+            let alias_extension =
+                preserved_module_specifier_extension(&module_specifier).unwrap_or("");
+            resolve_alias_module_specifier_from(
+                destination_path,
+                base_url,
+                path_aliases,
+                Some(&module_specifier),
+            )
+            .map(|module_specifier| ImportStrategy::Alias {
+                module_specifier: format!("{module_specifier}{alias_extension}"),
+            })
+            .unwrap_or_else(|| ImportStrategy::Relative {
+                module_specifier: relative_module_specifier_with_extension(
+                    &referrer.referrer_path,
+                    destination_path,
+                    &extension,
+                ),
+            })
+        }
+        ImportStrategy::Relative { .. } => ImportStrategy::Relative {
+            module_specifier: relative_module_specifier_with_extension(
+                &referrer.referrer_path,
+                destination_path,
+                &extension,
+            ),
+        },
+    };
+    ReferrerStrategy {
+        referrer_path: referrer.referrer_path,
+        strategy,
+    }
 }

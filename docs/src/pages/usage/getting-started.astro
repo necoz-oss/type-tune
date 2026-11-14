@@ -80,11 +80,11 @@ pnpm exec type-tune scan --project tsconfig.json --explain`} />
         insufficient referrers or an existing type location. Generated files are excluded during
         discovery unless <code>--include-generated</code> is specified. Declaration files such as
         <code>.d.ts</code> are not candidates. Supported <code>.vue</code> script blocks can add
-        read-only referrers, but Vue files are not rewritten. A move that would need a Vue import
-        update is rejected. An unresolved <code>.vue</code> file, such as a plain
-        <code>&lt;script&gt;</code> block, is reported by both <code>scan</code> and
-        <code>scan --explain</code> and blocks every move from that scan.
-        <code>.svelte</code>, <code>.astro</code>, and JavaScript files are not
+        referrers, and a reviewed move can update their import specifiers. Template and style
+        content is left unchanged. Imports that type-tune cannot update safely are rejected. An
+        unresolved <code>.vue</code> file, such as a plain <code>&lt;script&gt;</code> block, is
+        reported by both <code>scan</code> and <code>scan --explain</code> and blocks every move
+        from that scan. <code>.svelte</code>, <code>.astro</code>, and JavaScript files are not
         scanned or rewritten.
       </p>
       <p>
