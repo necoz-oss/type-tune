@@ -5,6 +5,7 @@
 //! A missing compiler fails the test.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -109,7 +110,8 @@ fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
     ]);
     assert!(plan.status.success(), "{}", output_text(&plan));
     select_user(&fixture, "src/domain/user.ts");
-    let before = fs::read(fixture.root.join("src/Card.vue")).unwrap();
+    let before_vue = fs::read(fixture.root.join("src/Card.vue")).unwrap();
+    let before = project_snapshot(&fixture.root);
 
     let dry_run = fixture.run(&[
         "apply",
@@ -120,13 +122,14 @@ fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
         "--dry-run",
     ]);
     assert!(dry_run.status.success(), "{}", output_text(&dry_run));
-    assert_eq!(fs::read(fixture.root.join("src/Card.vue")).unwrap(), before);
+    assert_eq!(project_snapshot(&fixture.root), before);
     assert!(!fixture.root.join("src/domain").exists());
+    assert!(transaction_files(&fixture.root).is_empty());
 
     let apply = fixture.run(&["apply", "--plan", "plan.json", "--markdown", "plan.md"]);
     assert!(apply.status.success(), "{}", output_text(&apply));
     let updated = fs::read(fixture.root.join("src/Card.vue")).unwrap();
-    let expected = replace_once(&before, b"\"./model\"", b"\"./domain/user\"");
+    let expected = replace_once(&before_vue, b"\"./model\"", b"\"./domain/user\"");
     assert_eq!(updated, expected);
     assert!(fixture.root.join("src/domain/user.ts").is_file());
 
@@ -232,6 +235,43 @@ fn replace_once(source: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
         "the specifier replacement must be the only change"
     );
     updated
+}
+
+fn project_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    collect_project_files(root, root, &mut files);
+    files
+}
+
+fn collect_project_files(root: &Path, dir: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+    let entries =
+        fs::read_dir(dir).unwrap_or_else(|error| panic!("reads {}: {error}", dir.display()));
+    for entry in entries {
+        let entry = entry.expect("directory entry");
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "node_modules" {
+            continue;
+        }
+        if path.is_dir() {
+            collect_project_files(root, &path, files);
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .expect("project path")
+            .to_string_lossy()
+            .replace('\\', "/");
+        files.insert(relative, fs::read(&path).expect("reads project file"));
+    }
+}
+
+fn transaction_files(root: &Path) -> Vec<String> {
+    project_snapshot(root)
+        .into_keys()
+        .filter(|path| path.contains(".type-tune-"))
+        .collect()
 }
 
 fn output_text(output: &Output) -> String {

@@ -153,23 +153,34 @@ fn scan_reports_vue_referrers_and_apply_updates_script_specifiers() {
         "#!/bin/sh\necho 'Card.vue(4,1): error TS2322: bad' >&2\nexit 1\n",
     );
     let before = fixture.snapshot();
-    let failed = fixture.run_with_path(
-        &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
-        Some(""),
-    );
-    assert!(!failed.status.success(), "{}", output_text(&failed));
-    let failed_text = output_text(&failed);
-    assert!(
-        failed_text.contains("vue-tsc validation failed"),
-        "{failed_text}"
-    );
-    assert!(
-        failed_text.contains("rolled back file changes"),
-        "{failed_text}"
-    );
-    assert!(failed_text.contains("TS2322"), "{failed_text}");
-    assert_eq!(fixture.snapshot(), before);
-    assert!(!fixture.0.join("src/domain").exists());
+    for args in [
+        vec![
+            "apply",
+            "--plan",
+            "plan.json",
+            "--markdown",
+            "plan.md",
+            "--dry-run",
+        ],
+        vec!["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+    ] {
+        let failed = fixture.run_with_path(&args, Some(""));
+        assert!(!failed.status.success(), "{}", output_text(&failed));
+        let failed_text = output_text(&failed);
+        assert!(
+            failed_text.contains("vue-tsc validation failed"),
+            "{failed_text}"
+        );
+        assert!(
+            failed_text.contains("rolled back file changes"),
+            "{failed_text}"
+        );
+        assert!(!failed_text.contains("rollback failed"), "{failed_text}");
+        assert!(failed_text.contains("TS2322"), "{failed_text}");
+        assert_eq!(fixture.snapshot(), before);
+        assert!(!fixture.0.join("src/domain").exists());
+        assert!(fixture_has_no_transaction_files(&fixture.0));
+    }
 
     write_compiler_stub(&fixture.0, "vue-tsc", "#!/bin/sh\nexit 0\n");
     let dry_run = fixture.run(&[
@@ -395,17 +406,30 @@ fn missing_vue_tsc_rolls_back_a_vue_edit_and_typescript_only_moves_do_not_need_i
     assert!(!fixture.0.join("node_modules/.bin/vue-tsc").exists());
     let before = fixture.snapshot();
 
-    let missing = fixture.run_with_path(
-        &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
-        Some(""),
-    );
-    assert!(!missing.status.success(), "{}", output_text(&missing));
-    let text = output_text(&missing);
-    assert!(text.contains("Vue script edits require vue-tsc"), "{text}");
-    assert!(text.contains("could not be started"), "{text}");
-    assert!(text.contains("rolled back"), "{text}");
-    assert_eq!(fixture.snapshot(), before);
-    assert!(!fixture.0.join("src/domain").exists());
+    for args in [
+        vec![
+            "apply",
+            "--plan",
+            "plan.json",
+            "--markdown",
+            "plan.md",
+            "--dry-run",
+        ],
+        vec!["apply", "--plan", "plan.json", "--markdown", "plan.md"],
+    ] {
+        let missing = fixture.run_with_path(&args, Some(""));
+        assert!(!missing.status.success(), "{}", output_text(&missing));
+        let text = output_text(&missing);
+        assert!(text.contains("Vue script edits require vue-tsc"), "{text}");
+        assert!(text.contains("could not be started"), "{text}");
+        assert!(text.contains("Install vue-tsc"), "{text}");
+        assert!(!text.contains("The rewrite was rolled back."), "{text}");
+        assert!(text.contains("rolled back file changes"), "{text}");
+        assert!(!text.contains("rollback failed"), "{text}");
+        assert_eq!(fixture.snapshot(), before);
+        assert!(!fixture.0.join("src/domain").exists());
+        assert!(fixture_has_no_transaction_files(&fixture.0));
+    }
 
     let typescript_only = Fixture::new();
     typescript_only.write(
@@ -427,6 +451,23 @@ fn missing_vue_tsc_rolls_back_a_vue_edit_and_typescript_only_moves_do_not_need_i
     select_user(&typescript_only, "src/domain/user.ts");
     write_compiler_stub(&typescript_only.0, "tsc", "#!/bin/sh\nexit 0\n");
     let vue_before = fs::read(typescript_only.0.join("src/Card.vue")).unwrap();
+    let dry_run = typescript_only.run_with_path(
+        &[
+            "apply",
+            "--plan",
+            "plan.json",
+            "--markdown",
+            "plan.md",
+            "--dry-run",
+        ],
+        Some(""),
+    );
+    assert!(dry_run.status.success(), "{}", output_text(&dry_run));
+    assert!(!typescript_only.0.join("src/domain").exists());
+    assert_eq!(
+        fs::read(typescript_only.0.join("src/Card.vue")).unwrap(),
+        vue_before
+    );
     let applied = typescript_only.run_with_path(
         &["apply", "--plan", "plan.json", "--markdown", "plan.md"],
         Some(""),
@@ -437,6 +478,71 @@ fn missing_vue_tsc_rolls_back_a_vue_edit_and_typescript_only_moves_do_not_need_i
         fs::read(typescript_only.0.join("src/Card.vue")).unwrap(),
         vue_before
     );
+}
+
+#[test]
+fn vue_validation_failure_reports_a_failed_rollback_without_claiming_restoration() {
+    for dry_run in [true, false] {
+        let fixture = Fixture::new();
+        let plan = fixture.run(&[
+            "plan",
+            "--project",
+            "tsconfig.json",
+            "--out",
+            "plan.json",
+            "--markdown",
+            "plan.md",
+            "--min-referrers",
+            "2",
+        ]);
+        assert!(plan.status.success(), "{}", output_text(&plan));
+        select_user(&fixture, "src/domain/user.ts");
+        write_compiler_stub(&fixture.0, "tsc", "#!/bin/sh\nexit 0\n");
+        write_compiler_stub(
+            &fixture.0,
+            "vue-tsc",
+            "#!/bin/sh\n/bin/rm -f src/Card.vue\n/bin/mkdir src/Card.vue\necho 'Card.vue(4,1): error TS2322: blocked' >&2\nexit 1\n",
+        );
+        let mut args = vec!["apply", "--plan", "plan.json", "--markdown", "plan.md"];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        let failed = fixture.run_with_path(&args, Some(""));
+        assert!(!failed.status.success(), "{}", output_text(&failed));
+        let text = output_text(&failed);
+        assert!(text.contains("vue-tsc validation failed"), "{text}");
+        assert!(text.contains("TS2322"), "{text}");
+        assert!(text.contains("rollback failed"), "{text}");
+        assert!(!text.contains("rolled back file changes"), "{text}");
+        assert!(!text.contains("The rewrite was rolled back."), "{text}");
+        assert!(
+            fixture.0.join("src/Card.vue").is_dir(),
+            "restoration must remain incomplete when rollback fails"
+        );
+    }
+}
+
+fn fixture_has_no_transaction_files(root: &std::path::Path) -> bool {
+    fn walk(dir: &std::path::Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return true;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == "node_modules" {
+                continue;
+            }
+            if name.contains(".type-tune-") {
+                return false;
+            }
+            if entry.path().is_dir() && !walk(&entry.path()) {
+                return false;
+            }
+        }
+        true
+    }
+    walk(root)
 }
 
 fn select_user(fixture: &Fixture, destination: &str) {
