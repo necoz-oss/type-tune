@@ -179,7 +179,7 @@ fn scan_reports_vue_referrers_and_apply_updates_script_specifiers() {
         assert!(failed_text.contains("TS2322"), "{failed_text}");
         assert_eq!(fixture.snapshot(), before);
         assert!(!fixture.0.join("src/domain").exists());
-        assert!(fixture_has_no_transaction_files(&fixture.0));
+        assert_no_transaction_artifacts(&fixture.0);
     }
 
     write_compiler_stub(&fixture.0, "vue-tsc", "#!/bin/sh\nexit 0\n");
@@ -428,7 +428,7 @@ fn missing_vue_tsc_rolls_back_a_vue_edit_and_typescript_only_moves_do_not_need_i
         assert!(!text.contains("rollback failed"), "{text}");
         assert_eq!(fixture.snapshot(), before);
         assert!(!fixture.0.join("src/domain").exists());
-        assert!(fixture_has_no_transaction_files(&fixture.0));
+        assert_no_transaction_artifacts(&fixture.0);
     }
 
     let typescript_only = Fixture::new();
@@ -522,27 +522,34 @@ fn vue_validation_failure_reports_a_failed_rollback_without_claiming_restoration
     }
 }
 
-fn fixture_has_no_transaction_files(root: &std::path::Path) -> bool {
-    fn walk(dir: &std::path::Path) -> bool {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return true;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name == "node_modules" {
-                continue;
-            }
-            if name.contains(".type-tune-") {
-                return false;
-            }
-            if entry.path().is_dir() && !walk(&entry.path()) {
-                return false;
-            }
+fn assert_no_transaction_artifacts(root: &std::path::Path) {
+    let entries = fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("could not read directory {}: {error}", root.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| {
+            panic!(
+                "could not read directory entry in {}: {error}",
+                root.display()
+            )
+        });
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "node_modules" {
+            continue;
         }
-        true
+        if name.contains(".type-tune-") {
+            panic!("unexpected transaction artifact {}", path.display());
+        }
+        let metadata = fs::symlink_metadata(&path)
+            .unwrap_or_else(|error| panic!("could not inspect {}: {error}", path.display()));
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            assert_no_transaction_artifacts(&path);
+        }
     }
-    walk(root)
 }
 
 fn select_user(fixture: &Fixture, destination: &str) {

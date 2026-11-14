@@ -5,7 +5,7 @@
 //! A missing compiler fails the test.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -122,9 +122,10 @@ fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
         "--dry-run",
     ]);
     assert!(dry_run.status.success(), "{}", output_text(&dry_run));
-    assert_eq!(project_snapshot(&fixture.root), before);
-    assert!(!fixture.root.join("src/domain").exists());
-    assert!(transaction_files(&fixture.root).is_empty());
+    let after = project_snapshot(&fixture.root);
+    assert_eq!(after, before);
+    assert_no_transaction_artifacts(&after);
+    assert!(!after.directories.iter().any(|path| path == "src/domain"));
 
     let apply = fixture.run(&["apply", "--plan", "plan.json", "--markdown", "plan.md"]);
     assert!(apply.status.success(), "{}", output_text(&apply));
@@ -237,41 +238,76 @@ fn replace_once(source: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     updated
 }
 
-fn project_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
-    let mut files = BTreeMap::new();
-    collect_project_files(root, root, &mut files);
-    files
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectSnapshot {
+    directories: BTreeSet<String>,
+    files: BTreeMap<String, Vec<u8>>,
+    symlinks: BTreeSet<String>,
 }
 
-fn collect_project_files(root: &Path, dir: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
-    let entries =
-        fs::read_dir(dir).unwrap_or_else(|error| panic!("reads {}: {error}", dir.display()));
+fn project_snapshot(root: &Path) -> ProjectSnapshot {
+    let mut snapshot = ProjectSnapshot {
+        directories: BTreeSet::new(),
+        files: BTreeMap::new(),
+        symlinks: BTreeSet::new(),
+    };
+    collect_project_entries(root, root, &mut snapshot);
+    snapshot
+}
+
+fn collect_project_entries(root: &Path, dir: &Path, snapshot: &mut ProjectSnapshot) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("could not read directory {}: {error}", dir.display()));
     for entry in entries {
-        let entry = entry.expect("directory entry");
+        let entry = entry.unwrap_or_else(|error| {
+            panic!(
+                "could not read directory entry in {}: {error}",
+                dir.display()
+            )
+        });
         let path = entry.path();
         let name = entry.file_name();
-        let name = name.to_string_lossy();
         if name == "node_modules" {
             continue;
         }
-        if path.is_dir() {
-            collect_project_files(root, &path, files);
-            continue;
-        }
+        let metadata = fs::symlink_metadata(&path)
+            .unwrap_or_else(|error| panic!("could not inspect {}: {error}", path.display()));
         let relative = path
             .strip_prefix(root)
-            .expect("project path")
+            .unwrap_or_else(|error| {
+                panic!("{} is outside {}: {error}", path.display(), root.display())
+            })
             .to_string_lossy()
             .replace('\\', "/");
-        files.insert(relative, fs::read(&path).expect("reads project file"));
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            snapshot.symlinks.insert(relative);
+            continue;
+        }
+        if file_type.is_dir() {
+            snapshot.directories.insert(relative);
+            collect_project_entries(root, &path, snapshot);
+            continue;
+        }
+        let contents = fs::read(&path)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
+        snapshot.files.insert(relative, contents);
     }
 }
 
-fn transaction_files(root: &Path) -> Vec<String> {
-    project_snapshot(root)
-        .into_keys()
+fn assert_no_transaction_artifacts(snapshot: &ProjectSnapshot) {
+    let leftovers = snapshot
+        .directories
+        .iter()
+        .chain(snapshot.files.keys())
+        .chain(snapshot.symlinks.iter())
         .filter(|path| path.contains(".type-tune-"))
-        .collect()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        leftovers.is_empty(),
+        "unexpected transaction artifacts: {leftovers:?}"
+    );
 }
 
 fn output_text(output: &Output) -> String {
