@@ -482,23 +482,186 @@ fn mixed_import_with_an_unmoved_symbol_is_still_rejected() {
     assert_unchanged(&fixture, &before);
 }
 
-#[test]
-fn stale_plan_metadata_is_rejected_before_writes() {
-    let fixture = Fixture::pair();
-    plan(&fixture);
-    set_json_status(&fixture, &[("A", "apply")]);
-    let mut plan = plan_json(&fixture);
-    plan["entries"][0]["sourceFingerprint"] = serde_json::Value::String("tampered".into());
+fn mutate_entry(fixture: &Fixture, symbol: &str, mutate: impl FnOnce(&mut serde_json::Value)) {
+    let mut plan = plan_json(fixture);
+    let entry = plan["entries"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["candidate"]["symbolName"] == symbol)
+        .unwrap_or_else(|| panic!("missing {symbol}"));
+    mutate(entry);
     fs::write(
         fixture.0.join("plan.json"),
         serde_json::to_vec_pretty(&plan).unwrap(),
     )
     .unwrap();
+}
+
+#[test]
+fn stale_fingerprint_of_an_approved_candidate_is_rejected() {
+    let fixture = Fixture::pair();
+    plan(&fixture);
+    set_json_status(&fixture, &[("A", "apply")]);
+    mutate_entry(&fixture, "A", |entry| {
+        entry["sourceFingerprint"] = serde_json::Value::String("tampered".into());
+    });
     let before = snapshot(&fixture.0);
     let apply = fixture.run(&["apply", "--plan", "plan.json", "--accept-unreviewed"]);
     assert!(!apply.status.success(), "{}", output_text(&apply));
     assert!(
         output_text(&apply).contains("Stale plan entry"),
+        "{}",
+        output_text(&apply)
+    );
+    assert_unchanged(&fixture, &before);
+}
+
+#[test]
+fn stale_fingerprint_of_an_ignored_candidate_is_rejected() {
+    let fixture = Fixture::pair();
+    plan(&fixture);
+    set_json_status(&fixture, &[("A", "apply")]);
+    mutate_entry(&fixture, "B", |entry| {
+        entry["sourceFingerprint"] = serde_json::Value::String("tampered".into());
+    });
+    let before = snapshot(&fixture.0);
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--accept-unreviewed"]);
+    assert!(!apply.status.success(), "{}", output_text(&apply));
+    assert!(
+        output_text(&apply).contains("Stale plan entry"),
+        "{}",
+        output_text(&apply)
+    );
+    assert_unchanged(&fixture, &before);
+}
+
+#[test]
+fn stale_ignored_source_content_is_rejected() {
+    let fixture = Fixture::pair();
+    plan(&fixture);
+    set_json_status(&fixture, &[("A", "apply")]);
+    fixture.write(
+        "src/beta/b.ts",
+        "export type B = { id: string; extra: string }\n",
+    );
+    let before = snapshot(&fixture.0);
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--accept-unreviewed"]);
+    assert!(!apply.status.success(), "{}", output_text(&apply));
+    assert!(
+        output_text(&apply).contains("Stale plan entry"),
+        "{}",
+        output_text(&apply)
+    );
+    assert_unchanged(&fixture, &before);
+}
+
+#[test]
+fn invalid_ignored_candidate_metadata_is_rejected() {
+    let fixture = Fixture::pair();
+    plan(&fixture);
+    set_json_status(&fixture, &[("A", "apply")]);
+    mutate_entry(&fixture, "B", |entry| {
+        entry["candidate"]["symbolName"] = serde_json::Value::String("Tampered".into());
+    });
+    let before = snapshot(&fixture.0);
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--accept-unreviewed"]);
+    assert!(!apply.status.success(), "{}", output_text(&apply));
+    assert!(
+        output_text(&apply).contains("Invalid candidate metadata"),
+        "{}",
+        output_text(&apply)
+    );
+    assert_unchanged(&fixture, &before);
+}
+
+#[test]
+fn ignored_renamed_barrel_does_not_block_an_approved_move() {
+    let fixture = Fixture::pair();
+    stub_compilers(&fixture.0);
+    fixture.write("src/models.ts", "export interface User { id: string }\n");
+    fixture.write(
+        "src/index.ts",
+        "export type { User as PublicUser } from \"./models\";\n",
+    );
+    fixture.write(
+        "src/use-user.ts",
+        "import type { User } from './models';\nexport type App = User;\n",
+    );
+    fixture.write(
+        "src/Card.vue",
+        "<script setup lang=\"ts\">\nimport type { PublicUser } from \"./index\";\ndefineProps<{ user: PublicUser }>();\n</script>\n",
+    );
+    plan(&fixture);
+    let planned = plan_json(&fixture);
+    let user = planned["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["candidate"]["symbolName"] == "User")
+        .expect("user");
+    assert!(
+        user["candidate"]
+            .get("vueScriptStrategies")
+            .is_none_or(|strategies| strategies.as_array().is_some_and(Vec::is_empty)),
+        "{user}"
+    );
+    assert!(
+        user["candidate"]["vueRewriteBlockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|blocker| blocker["path"] == "src/Card.vue"),
+        "{user}"
+    );
+    set_json_status(&fixture, &[("A", "apply")]);
+    let before_card = fs::read(fixture.0.join("src/Card.vue")).unwrap();
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--accept-unreviewed"]);
+    assert!(apply.status.success(), "{}", output_text(&apply));
+    assert!(
+        output_text(&apply).contains("Applied 1 candidate"),
+        "{}",
+        output_text(&apply)
+    );
+    assert!(
+        fs::read_to_string(fixture.0.join("src/alpha/A.vue"))
+            .unwrap()
+            .contains("./types/alpha")
+    );
+    assert_eq!(
+        fs::read(fixture.0.join("src/Card.vue")).unwrap(),
+        before_card
+    );
+}
+
+#[test]
+fn approved_renamed_barrel_is_rejected_without_writes() {
+    let fixture = Fixture::pair();
+    fixture.write("src/models.ts", "export interface User { id: string }\n");
+    fixture.write(
+        "src/index.ts",
+        "export type { User as PublicUser } from \"./models\";\n",
+    );
+    fixture.write(
+        "src/use-user.ts",
+        "import type { User } from './models';\nexport type App = User;\n",
+    );
+    fixture.write(
+        "src/Card.vue",
+        "<script setup lang=\"ts\">\nimport type { PublicUser } from \"./index\";\ndefineProps<{ user: PublicUser }>();\n</script>\n",
+    );
+    plan(&fixture);
+    set_json_status(&fixture, &[("User", "apply")]);
+    let before = snapshot(&fixture.0);
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--accept-unreviewed"]);
+    assert!(!apply.status.success(), "{}", output_text(&apply));
+    assert!(
+        output_text(&apply).contains("barrel"),
+        "{}",
+        output_text(&apply)
+    );
+    assert!(
+        output_text(&apply).contains("before any files were changed"),
         "{}",
         output_text(&apply)
     );

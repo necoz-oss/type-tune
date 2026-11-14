@@ -8,6 +8,8 @@ use std::{
 
 use crate::glob::matches;
 
+pub use crate::source_role::is_vue_sfc_path;
+
 /// Reads a TypeScript source file, skipping dangling symbolic links.
 ///
 /// TypeScript project loading ignores unreadable symlink targets instead of failing the scan.

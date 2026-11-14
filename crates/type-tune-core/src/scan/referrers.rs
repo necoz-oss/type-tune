@@ -193,11 +193,7 @@ pub(super) fn scan_parsed_project_files_with_aliases(
                                 style_key,
                                 VueBlockReason::NamespaceOrDefault,
                             );
-                        } else if matches!(
-                            style,
-                            ReferrerImportStyle::Barrel { .. }
-                                | ReferrerImportStyle::NamespaceRelative
-                        ) {
+                        } else if barrel_import {
                             record_vue_blocker(
                                 &mut vue_blockers,
                                 style_key,

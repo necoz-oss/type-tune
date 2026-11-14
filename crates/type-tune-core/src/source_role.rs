@@ -34,7 +34,7 @@ pub(crate) fn source_role(path: &str) -> SourceRole {
 
 /// Returns whether `path` names a Vue single-file component.
 #[must_use]
-pub(crate) fn is_vue_sfc_path(path: &str) -> bool {
+pub fn is_vue_sfc_path(path: &str) -> bool {
     file_name(path)
         .rsplit_once('.')
         .is_some_and(|(_, extension)| extension == "vue")
