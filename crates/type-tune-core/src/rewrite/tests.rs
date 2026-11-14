@@ -3196,6 +3196,68 @@ fn preserves_type_only_default_imports_when_splitting() {
 }
 
 #[test]
+fn preserves_aliased_mixed_imports_through_barrel_reexports() {
+    let sources: BTreeMap<String, String> = BTreeMap::from([
+        (
+            "src/feature/schema.ts".into(),
+            "export type A = { id: string };\nexport const runtime = 1;\n".into(),
+        ),
+        (
+            "src/feature/index.ts".into(),
+            "export { type A as PublicA, runtime } from './schema';\n".into(),
+        ),
+        (
+            "src/app.ts".into(),
+            concat!(
+                "import { type PublicA as LocalA, runtime } from './feature';\n",
+                "export const result: LocalA = { id: 'x' };\n",
+                "export const count = runtime;\n",
+            )
+            .into(),
+        ),
+    ]);
+
+    let candidate = apply_placement(
+        scan_project_files(
+            sources
+                .iter()
+                .map(|(path, source)| (path.clone(), source.clone()))
+                .collect(),
+        )
+        .expect("scans"),
+        PlacementStyle::Collocation,
+    )
+    .into_iter()
+    .find(|candidate| candidate.symbol_name == "A")
+    .expect("finds shared type");
+
+    let changes = plan_extraction_rewrite(&[candidate], &sources).expect("plans extraction");
+
+    let destination = changes
+        .get("src/feature/types/feature.ts")
+        .expect("writes moved type destination");
+    assert_eq!(destination, "export type A = { id: string };\n");
+
+    let barrel = changes
+        .get("src/feature/index.ts")
+        .expect("rewrites barrel export");
+    assert!(
+        barrel.contains("export { runtime } from './schema';"),
+        "{barrel}"
+    );
+    assert!(
+        barrel.contains("export type { A as PublicA } from './types/feature';"),
+        "{barrel}"
+    );
+
+    // The consumer continues importing through the public barrel; only the
+    // barrel's type re-export needs to point at the extracted declaration.
+    assert!(!changes.contains_key("src/app.ts"));
+
+    compile_rewrite_fixture(&sources, &changes);
+}
+
+#[test]
 fn preserves_value_imports_when_moving_mixed_type_only_shared() {
     let sources: BTreeMap<String, String> = BTreeMap::from([
         (

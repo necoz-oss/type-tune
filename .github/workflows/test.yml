@@ -45,6 +45,11 @@ jobs:
       - name: Install Node dependencies
         run: corepack pnpm install --frozen-lockfile
 
+      - name: Verify TypeScript barrel regression
+        run: |
+          test -f node_modules/typescript/bin/tsc
+          cargo test -p type-tune-core preserves_aliased_mixed_imports_through_barrel_reexports
+
       - name: Test Vue script rewrites with vue-tsc
         run: cargo test --test vue_tsc_apply -- --ignored --nocapture
 
