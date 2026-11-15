@@ -142,6 +142,274 @@ fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
     );
 }
 
+#[test]
+#[ignore = "requires the pinned vue and vue-tsc devDependencies; run cargo test --test vue_tsc_apply -- --ignored"]
+fn apply_moves_one_approved_vue_candidate_while_another_stays_ignored() {
+    if !cfg!(unix) {
+        panic!("the real vue-tsc apply test runs on the Linux CI runner");
+    }
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repository root");
+    let root = std::env::temp_dir().join(format!(
+        "type-tune-vue-partial-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let fixture = RealFixture { root };
+    fixture.write(
+        "tsconfig.json",
+        r#"{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "preserve",
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue"]
+}
+"#,
+    );
+    fixture.write("src/alpha/a.ts", "export interface A { id: string }\n");
+    fixture.write(
+        "src/alpha/use-a.ts",
+        "import type { A } from './a';\nexport type UseA = A;\n",
+    );
+    fixture.write(
+        "src/alpha/A.vue",
+        "<script setup lang=\"ts\">\nimport type { A } from \"./a\";\ndefineProps<{ item: A }>();\n</script>\n<template><p>A</p></template>\n",
+    );
+    fixture.write("src/beta/b.ts", "export interface B { id: string }\n");
+    fixture.write(
+        "src/beta/use-b.ts",
+        "import type { B } from './b';\nexport type UseB = B;\n",
+    );
+    fixture.write(
+        "src/beta/B.vue",
+        "<script setup lang=\"ts\">\nimport type { B } from \"./b\";\ndefineProps<{ item: B }>();\n</script>\n<template><p>B</p></template>\n",
+    );
+    link_repository_modules(&repo, &fixture.root);
+    let initial_tsc = Command::new(fixture.root.join("node_modules/.bin/tsc"))
+        .current_dir(&fixture.root)
+        .args([
+            "--noEmit",
+            "--pretty",
+            "false",
+            "--project",
+            "tsconfig.json",
+        ])
+        .output()
+        .expect("starts tsc");
+    assert!(
+        initial_tsc.status.success(),
+        "original fixture failed tsc:\n{}",
+        output_text(&initial_tsc)
+    );
+    let initial_vue = run_vue_tsc(&fixture.root);
+    assert!(
+        initial_vue.status.success(),
+        "original fixture failed vue-tsc:\n{}",
+        output_text(&initial_vue)
+    );
+
+    let plan = fixture.run(&[
+        "plan",
+        "--project",
+        "tsconfig.json",
+        "--out",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--min-referrers",
+        "2",
+    ]);
+    assert!(plan.status.success(), "{}", output_text(&plan));
+    select_symbol(&fixture, "A");
+    let before = project_snapshot(&fixture.root);
+    let before_a = fs::read(fixture.root.join("src/alpha/A.vue")).unwrap();
+    let before_b = fs::read(fixture.root.join("src/beta/B.vue")).unwrap();
+    let before_b_source = fs::read(fixture.root.join("src/beta/b.ts")).unwrap();
+    let before_use_b = fs::read(fixture.root.join("src/beta/use-b.ts")).unwrap();
+
+    let dry_run = fixture.run(&[
+        "apply",
+        "--plan",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--dry-run",
+    ]);
+    assert!(dry_run.status.success(), "{}", output_text(&dry_run));
+    assert_eq!(project_snapshot(&fixture.root), before);
+    assert_no_transaction_artifacts(&project_snapshot(&fixture.root));
+
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--markdown", "plan.md"]);
+    assert!(apply.status.success(), "{}", output_text(&apply));
+    let text = output_text(&apply);
+    assert!(text.contains("Applied 1 candidate"), "{text}");
+    assert!(text.contains("1 ignored"), "{text}");
+    let updated_a = fs::read(fixture.root.join("src/alpha/A.vue")).unwrap();
+    let expected = replace_once(&before_a, b"\"./a\"", b"\"./types/alpha\"");
+    assert_eq!(updated_a, expected);
+    assert_eq!(
+        fs::read(fixture.root.join("src/beta/B.vue")).unwrap(),
+        before_b
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("src/beta/b.ts")).unwrap(),
+        before_b_source
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("src/beta/use-b.ts")).unwrap(),
+        before_use_b
+    );
+    let beta_files = fs::read_dir(fixture.root.join("src/beta"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        beta_files,
+        ["B.vue", "b.ts", "use-b.ts"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+    let checked_tsc = Command::new(fixture.root.join("node_modules/.bin/tsc"))
+        .current_dir(&fixture.root)
+        .args([
+            "--noEmit",
+            "--pretty",
+            "false",
+            "--project",
+            "tsconfig.json",
+        ])
+        .output()
+        .expect("starts tsc");
+    assert!(
+        checked_tsc.status.success(),
+        "rewritten fixture failed tsc:\n{}",
+        output_text(&checked_tsc)
+    );
+    let checked_vue = run_vue_tsc(&fixture.root);
+    assert!(
+        checked_vue.status.success(),
+        "rewritten fixture failed vue-tsc:\n{}",
+        output_text(&checked_vue)
+    );
+}
+
+#[test]
+#[ignore = "requires the pinned vue and vue-tsc devDependencies; run cargo test --test vue_tsc_apply -- --ignored"]
+fn valid_default_import_fixtures_typecheck_and_keep_named_imports_independent() {
+    if !cfg!(unix) {
+        panic!("the real vue-tsc apply test runs on the Linux CI runner");
+    }
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repository root");
+    let root = std::env::temp_dir().join(format!(
+        "type-tune-vue-default-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let fixture = RealFixture { root };
+    fixture.write(
+        "tsconfig.json",
+        r#"{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "preserve",
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue"]
+}
+"#,
+    );
+    fixture.write(
+        "src/models.ts",
+        "export interface User { id: string }\nexport default class RuntimeModel {}\n",
+    );
+    fixture.write(
+        "src/forward.ts",
+        "export type { User as default } from \"./models\";\n",
+    );
+    fixture.write(
+        "src/use.ts",
+        "import type { User } from './models';\nexport type App = User;\n",
+    );
+    fixture.write(
+        "src/Separate.vue",
+        "<script setup lang=\"ts\">\nimport RuntimeModel from \"./models\";\nimport type { User } from \"./models\";\nconst model = new RuntimeModel();\ndefineProps<{ user: User }>();\n</script>\n",
+    );
+    fixture.write(
+        "src/Mixed.vue",
+        "<script setup lang=\"ts\">\nimport RuntimeModel, { type User } from \"./models\";\nconst model = new RuntimeModel();\ndefineProps<{ user: User }>();\n</script>\n",
+    );
+    fixture.write(
+        "src/Forward.vue",
+        "<script setup lang=\"ts\">\nimport type User from \"./forward\";\ndefineProps<{ user: User }>();\n</script>\n",
+    );
+    link_repository_modules(&repo, &fixture.root);
+    let checked = run_vue_tsc(&fixture.root);
+    assert!(
+        checked.status.success(),
+        "default-import fixture failed vue-tsc:\n{}",
+        output_text(&checked)
+    );
+    let scan = fixture.run(&["scan", "--project", "tsconfig.json", "--format", "json"]);
+    assert!(scan.status.success(), "{}", output_text(&scan));
+    let report: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+    let candidates = report["candidates"].as_array().unwrap();
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate["symbolName"] != "RuntimeModel")
+    );
+    let user = candidates
+        .iter()
+        .find(|candidate| candidate["symbolName"] == "User")
+        .expect("user");
+    assert!(
+        user["vueScriptStrategies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|strategy| strategy["referrerPath"] == "src/Separate.vue"),
+        "{user}"
+    );
+    assert!(
+        user["vueRewriteBlockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|blocker| blocker["path"] == "src/Mixed.vue"),
+        "{user}"
+    );
+    assert!(
+        user["vueRewriteBlockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|blocker| blocker["path"] == "src/Forward.vue"),
+        "{user}"
+    );
+}
+
 struct RealFixture {
     root: PathBuf,
 }
@@ -194,6 +462,25 @@ fn run_vue_tsc(project: &Path) -> Output {
         .args(["--noEmit", "--project", "tsconfig.json"])
         .output()
         .expect("starts the real vue-tsc")
+}
+
+fn select_symbol(fixture: &RealFixture, symbol: &str) {
+    let markdown = fs::read_to_string(fixture.root.join("plan.md")).unwrap();
+    let plan_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.root.join("plan.json")).unwrap()).unwrap();
+    let entry = plan_json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["candidate"]["symbolName"] == symbol)
+        .unwrap_or_else(|| panic!("missing {symbol}"));
+    let id = entry["candidate"]["id"].as_str().unwrap();
+    let reviewed = markdown.replace(
+        &format!("- [ignore] {id} `{symbol}`"),
+        &format!("- [apply] {id} `{symbol}`"),
+    );
+    assert_ne!(reviewed, markdown, "could not approve {symbol}");
+    fixture.write("plan.md", &reviewed);
 }
 
 fn select_user(fixture: &RealFixture, destination: &str) {

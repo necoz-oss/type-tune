@@ -90,8 +90,10 @@ For accepted entries, the rewrite must:
   external-package, or unscanned non-TypeScript imports;
 - update a supported Vue script import by replacing only its module specifier, leaving template,
   style, and every other byte unchanged;
-- reject the move before writing files when a Vue import is not a direct specifier update, or when
-  any selected Vue file could not be analyzed;
+- reject the move before writing files when an approved candidate's Vue import is not a direct
+  specifier update, or when any selected Vue file could not be analyzed. Ignored plan entries are
+  still validated for freshness, metadata, and project boundaries, but their Vue files are not
+  rewrite inputs. An ignored candidate must not block an independent approved move;
 - after `tsc` succeeds, run `vue-tsc --noEmit --project` when a `.vue` file changed. `tsc` does not
   typecheck single-file components. If `vue-tsc` is missing or reports an error, roll the
   transaction back and report that failure. A move that does not change a `.vue` file does not

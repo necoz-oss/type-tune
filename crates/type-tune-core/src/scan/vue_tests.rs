@@ -509,10 +509,361 @@ fn counts_direct_barrel_and_namespace_vue_imports_once_per_file() {
         .find(|candidate| candidate.symbol_name == "User")
         .unwrap();
     assert!(user.referrer_strategies.is_empty());
+    assert!(
+        user.vue_script_strategies
+            .iter()
+            .any(|strategy| strategy.referrer_path == "src/direct/Card.vue")
+    );
+    assert!(
+        !user
+            .vue_script_strategies
+            .iter()
+            .any(|strategy| strategy.referrer_path == "src/namespace/Badge.vue")
+    );
+    assert!(
+        user.vue_rewrite_blockers.iter().any(|blocker| {
+            blocker.path == "src/namespace/Badge.vue"
+                && blocker.message.contains("namespace or default import")
+        }),
+        "{:?}",
+        user.vue_rewrite_blockers
+    );
+    assert!(
+        user.vue_rewrite_blockers
+            .iter()
+            .any(|blocker| blocker.path == "src/barrel/List.vue"
+                && blocker.message.contains("barrel"))
+    );
     assert_eq!(
         fs::read(root.path().join("src/direct/Card.vue")).unwrap(),
         before
     );
+}
+
+#[test]
+fn blocks_relative_and_alias_namespace_imports_without_dropping_the_referrer() {
+    let root = write_project(&[
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"~/*":["./src/*"]}},"include":["src"]}"#,
+        ),
+        (
+            "src/models.ts",
+            "export interface User { id: string }\nexport default class RuntimeModel {}\n",
+        ),
+        (
+            "src/use.ts",
+            "import type { User } from './models';\nexport type App = User;\n",
+        ),
+        (
+            "src/Relative.vue",
+            "<script setup lang=\"ts\">\nimport type * as Models from \"./models\";\ndefineProps<{ user: Models.User }>();\n</script>\n",
+        ),
+        (
+            "src/Alias.vue",
+            "<script setup lang=\"ts\">\nimport type * as Models from \"~/models\";\ndefineProps<{ user: Models.User }>();\n</script>\n",
+        ),
+        (
+            "src/Default.vue",
+            "<script setup lang=\"ts\">\nimport RuntimeModel, { type User } from \"./models\";\nconst model = new RuntimeModel();\ndefineProps<{ user: User }>();\n</script>\n",
+        ),
+        (
+            "src/Both.vue",
+            "<script setup lang=\"ts\">\nimport type { User } from \"./models\";\nimport type * as Models from \"./models\";\ndefineProps<{ user: User; other: Models.User }>();\n</script>\n",
+        ),
+    ]);
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    let user = candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .expect("user");
+    let readonly = user
+        .readonly_referrers
+        .iter()
+        .map(|referrer| referrer.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        readonly,
+        [
+            "src/Alias.vue",
+            "src/Both.vue",
+            "src/Default.vue",
+            "src/Relative.vue",
+        ]
+    );
+    assert_eq!(user.referrer_count, 5);
+    assert!(
+        user.vue_script_strategies.is_empty(),
+        "{:?}",
+        user.vue_script_strategies
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.symbol_name != "RuntimeModel")
+    );
+    for path in [
+        "src/Alias.vue",
+        "src/Both.vue",
+        "src/Default.vue",
+        "src/Relative.vue",
+    ] {
+        assert!(
+            user.vue_rewrite_blockers
+                .iter()
+                .any(|blocker| blocker.path == path
+                    && blocker.message.contains("namespace or default")),
+            "{path}: {:?}",
+            user.vue_rewrite_blockers
+        );
+    }
+    let error = plan_extraction_rewrite(
+        std::slice::from_ref(user),
+        &std::collections::BTreeMap::new(),
+    )
+    .expect_err("namespace import blocks the move");
+    assert!(
+        error.to_string().contains("namespace or default import"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("before any files were changed"),
+        "{error}"
+    );
+    assert!(root.path().join("src/Relative.vue").is_file());
+}
+
+#[test]
+fn blocks_a_renamed_barrel_reexport_instead_of_planning_a_direct_strategy() {
+    let root = write_project(&[
+        ("tsconfig.json", r#"{"include":["src"]}"#),
+        ("src/models.ts", "export interface User { id: string }\n"),
+        (
+            "src/index.ts",
+            "export type { User as PublicUser } from \"./models\";\n",
+        ),
+        (
+            "src/use.ts",
+            "import type { User } from './models';\nexport type App = User;\n",
+        ),
+        (
+            "src/Card.vue",
+            "<script setup lang=\"ts\">\nimport type { PublicUser } from \"./index\";\ndefineProps<{ user: PublicUser }>();\n</script>\n",
+        ),
+    ]);
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    let user = candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .expect("user");
+    assert!(
+        user.readonly_referrers
+            .iter()
+            .any(|referrer| referrer.path == "src/Card.vue")
+    );
+    assert!(
+        !user
+            .vue_script_strategies
+            .iter()
+            .any(|strategy| strategy.referrer_path == "src/Card.vue"),
+        "renamed barrel import was advertised as a supported strategy: {:?}",
+        user.vue_script_strategies
+    );
+    assert!(
+        user.vue_rewrite_blockers.iter().any(|blocker| {
+            blocker.path == "src/Card.vue" && blocker.message.contains("barrel")
+        }),
+        "{:?}",
+        user.vue_rewrite_blockers
+    );
+    let error = plan_extraction_rewrite(
+        std::slice::from_ref(user),
+        &std::collections::BTreeMap::new(),
+    )
+    .expect_err("renamed barrel blocks the move");
+    assert!(error.to_string().contains("barrel"), "{error}");
+    assert_eq!(
+        fs::read_to_string(root.path().join("src/Card.vue")).unwrap(),
+        "<script setup lang=\"ts\">\nimport type { PublicUser } from \"./index\";\ndefineProps<{ user: PublicUser }>();\n</script>\n"
+    );
+}
+
+#[test]
+fn blocks_alias_multilevel_and_mixed_barrel_vue_imports() {
+    let root = write_project(&[
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"~/*":["./src/*"]}},"include":["src"]}"#,
+        ),
+        ("src/models.ts", "export interface User { id: string }\n"),
+        (
+            "src/index.ts",
+            "export type { User as PublicUser } from \"./models\";\n",
+        ),
+        (
+            "src/mid.ts",
+            "export type { User as MidUser } from \"./models\";\n",
+        ),
+        (
+            "src/outer.ts",
+            "export type { MidUser as OuterUser } from \"./mid\";\n",
+        ),
+        (
+            "src/namespace.ts",
+            "export type * as Models from \"./models\";\n",
+        ),
+        (
+            "src/use.ts",
+            "import type { User } from './models';\nexport type App = User;\n",
+        ),
+        (
+            "src/Alias.vue",
+            "<script setup lang=\"ts\">\nimport type { PublicUser } from \"~/index\";\ndefineProps<{ user: PublicUser }>();\n</script>\n",
+        ),
+        (
+            "src/Level.vue",
+            "<script setup lang=\"ts\">\nimport type { OuterUser } from \"./outer\";\ndefineProps<{ user: OuterUser }>();\n</script>\n",
+        ),
+        (
+            "src/Namespace.vue",
+            "<script setup lang=\"ts\">\nimport type { Models } from \"./namespace\";\ndefineProps<{ user: Models.User }>();\n</script>\n",
+        ),
+        (
+            "src/Both.vue",
+            "<script setup lang=\"ts\">\nimport type { User } from \"./models\";\nimport type { PublicUser } from \"./index\";\ndefineProps<{ user: User; other: PublicUser }>();\n</script>\n",
+        ),
+    ]);
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    let user = candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .expect("user");
+    for path in [
+        "src/Alias.vue",
+        "src/Both.vue",
+        "src/Level.vue",
+        "src/Namespace.vue",
+    ] {
+        assert!(
+            user.readonly_referrers
+                .iter()
+                .any(|referrer| referrer.path == path),
+            "{path}"
+        );
+        assert!(
+            user.vue_rewrite_blockers
+                .iter()
+                .any(|blocker| blocker.path == path),
+            "{path}: {:?}",
+            user.vue_rewrite_blockers
+        );
+        assert!(
+            !user
+                .vue_script_strategies
+                .iter()
+                .any(|strategy| strategy.referrer_path == path),
+            "{path}: {:?}",
+            user.vue_script_strategies
+        );
+    }
+    assert_eq!(
+        user.vue_rewrite_blockers.len(),
+        4,
+        "{:?}",
+        user.vue_rewrite_blockers
+    );
+}
+
+#[test]
+fn keeps_a_separate_named_import_when_another_statement_uses_a_default() {
+    let root = write_project(&[
+        ("tsconfig.json", r#"{"include":["src"]}"#),
+        (
+            "src/models.ts",
+            "export interface User { id: string }\nexport default class RuntimeModel {}\n",
+        ),
+        (
+            "src/forward.ts",
+            "export type { User as default } from \"./models\";\n",
+        ),
+        (
+            "src/use.ts",
+            "import type { User } from './models';\nexport type App = User;\n",
+        ),
+        (
+            "src/Separate.vue",
+            "<script setup lang=\"ts\">\nimport RuntimeModel from \"./models\";\nimport type { User } from \"./models\";\nconst model = new RuntimeModel();\ndefineProps<{ user: User }>();\n</script>\n",
+        ),
+        (
+            "src/Forward.vue",
+            "<script setup lang=\"ts\">\nimport type User from \"./forward\";\ndefineProps<{ user: User }>();\n</script>\n",
+        ),
+    ]);
+    let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.symbol_name != "RuntimeModel")
+    );
+    let user = candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .expect("user");
+    assert!(
+        user.vue_script_strategies
+            .iter()
+            .any(|strategy| strategy.referrer_path == "src/Separate.vue"),
+        "{:?}",
+        user.vue_script_strategies
+    );
+    assert!(
+        !user
+            .vue_rewrite_blockers
+            .iter()
+            .any(|blocker| blocker.path == "src/Separate.vue"),
+        "{:?}",
+        user.vue_rewrite_blockers
+    );
+    assert!(
+        user.vue_rewrite_blockers.iter().any(|blocker| {
+            blocker.path == "src/Forward.vue" && blocker.message.contains("namespace or default")
+        }),
+        "{:?}",
+        user.vue_rewrite_blockers
+    );
+    assert!(
+        !user
+            .vue_script_strategies
+            .iter()
+            .any(|strategy| strategy.referrer_path == "src/Forward.vue")
+    );
+}
+
+#[test]
+fn keeps_typescript_namespace_imports_out_of_vue_blockers() {
+    let candidates = scan_project_files(vec![
+        (
+            "src/models.ts".into(),
+            "export interface User { id: string }\n".into(),
+        ),
+        (
+            "src/one.ts".into(),
+            "import type { User } from './models';\nexport type One = User;\n".into(),
+        ),
+        (
+            "src/two.ts".into(),
+            "import type * as Models from './models';\nexport type Two = Models.User;\n".into(),
+        ),
+    ])
+    .unwrap();
+    let user = candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .unwrap();
+    assert_eq!(user.referrer_paths, ["src/one.ts", "src/two.ts"]);
+    assert!(user.vue_rewrite_blockers.is_empty());
+    assert!(user.vue_script_strategies.is_empty());
+    assert_eq!(user.referrer_strategies.len(), 2);
 }
 
 #[test]

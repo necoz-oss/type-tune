@@ -1,6 +1,12 @@
 //! Apply command support routines.
 
-use std::{path::Path, process::ExitCode};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    process::ExitCode,
+};
+
+use type_tune_core::source::is_vue_sfc_path;
 
 use crate::{
     commit::{commit_and_validate, report_commit_failure},
@@ -199,10 +205,22 @@ pub(crate) fn run_apply() -> ExitCode {
             }
         }
     }
+    // Plan freshness already read every source, including ignored candidates. Rewrite planning
+    // keeps that snapshot and drops Vue files that are not script targets of the approved entries.
+    // `plan_rewrite` still rejects a Vue file outside those targets.
+    let approved_vue_paths = apply_candidates
+        .iter()
+        .flat_map(|candidate| candidate.vue_script_strategies.iter())
+        .map(|strategy| strategy.referrer_path.as_str())
+        .collect::<BTreeSet<_>>();
+    let rewrite_sources = sources
+        .into_iter()
+        .filter(|(path, _)| !is_vue_sfc_path(path) || approved_vue_paths.contains(path.as_str()))
+        .collect::<BTreeMap<_, _>>();
     let changes = match plan_extraction_rewrite(
         &config,
         &apply_candidates,
-        &sources,
+        &rewrite_sources,
         type_tune_core::rewrite::CompatibilityReexportQuoteStyle::Apply,
     ) {
         Ok(changes) => changes,

@@ -101,7 +101,9 @@ The safety contract is deliberately conservative:
 - a move that depends on a Vue file the scan could not analyze, or on a Vue import that is not a
   direct specifier update, is rejected inside rewrite planning before any edit is applied. An
   unresolved Vue file blocks every candidate from that scan. The scan JSON field is
-  `analysisLimitations`.
+  `analysisLimitations`. Direct namespace and default Vue imports are blockers, not supported
+  script strategies. Ignored plan entries stay in freshness and metadata checks, and their Vue
+  files are omitted from the rewrite source map so they cannot block a separate approved move.
 
 This is a source-aware refactoring tool, not a promise that every TypeScript construct can be moved
 automatically. Unsupported declaration shapes are excluded rather than guessed at.
