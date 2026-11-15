@@ -22,6 +22,7 @@ pub fn validate_typescript_project(project_root: &Path, project_path: &Path) -> 
             "Could not run TypeScript compiler {}: {error}",
             compiler.display()
         ))),
+        Err(CompilerFailure::Cleanup { message }) => Err(TypeTuneError::new(message)),
         Err(CompilerFailure::Diagnostics { status, output }) => Err(TypeTuneError::new(format!(
             "TypeScript compiler validation failed ({}): {}",
             status, output
@@ -45,10 +46,14 @@ pub fn validate_typescript_project_diagnostics(
             compiler.display()
         )),
         Err(CompilerFailure::Diagnostics { output, .. }) => Err(output),
+        Err(CompilerFailure::Cleanup { message }) => Err(message),
     }
 }
 
 enum CompilerFailure {
+    Cleanup {
+        message: String,
+    },
     Launch {
         compiler: PathBuf,
         error: std::io::Error,
@@ -63,29 +68,11 @@ fn run_typescript_compiler(
     project_root: &Path,
     project_path: &Path,
 ) -> std::result::Result<(), CompilerFailure> {
-    let compiler = resolve_typescript_compiler(project_root);
-    let output = Command::new(&compiler)
-        .current_dir(project_root)
-        .args(["--noEmit", "--project"])
-        .arg(project_path)
-        .output()
-        .map_err(|error| CompilerFailure::Launch {
-            compiler: compiler.clone(),
-            error,
-        })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let diagnostics = String::from_utf8_lossy(&output.stderr);
-    let diagnostics = if diagnostics.trim().is_empty() {
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    } else {
-        diagnostics.into_owned()
-    };
-    Err(CompilerFailure::Diagnostics {
-        status: output.status,
-        output: diagnostics.trim().to_string(),
-    })
+    run_compiler(
+        resolve_typescript_compiler(project_root),
+        project_root,
+        project_path,
+    )
 }
 
 /// Validates Vue script edits with a project-local `vue-tsc` when a rewrite changes `.vue` files.
@@ -117,6 +104,7 @@ pub fn validate_vue_script_edits(
         Err(CompilerFailure::Diagnostics { output, .. }) => {
             Err(format!("vue-tsc validation failed: {output}"))
         }
+        Err(CompilerFailure::Cleanup { message }) => Err(message),
     }
 }
 
@@ -124,29 +112,68 @@ fn run_vue_compiler(
     project_root: &Path,
     project_path: &Path,
 ) -> std::result::Result<(), CompilerFailure> {
-    let compiler = resolve_vue_compiler(project_root);
-    let output = Command::new(&compiler)
+    run_compiler(
+        resolve_vue_compiler(project_root),
+        project_root,
+        project_path,
+    )
+}
+
+// A fresh build-info file avoids both writes to the project's configured artifact and
+// reuse of potentially stale incremental state. No other compiler side effects are sandboxed.
+fn run_compiler(
+    compiler: PathBuf,
+    project_root: &Path,
+    project_path: &Path,
+) -> std::result::Result<(), CompilerFailure> {
+    let temp = tempfile::Builder::new()
+        .prefix("type-tune-compiler-")
+        .tempdir()
+        .map_err(|error| CompilerFailure::Cleanup {
+            message: format!("Could not create temporary compiler validation directory: {error}"),
+        })?;
+    let result = Command::new(&compiler)
         .current_dir(project_root)
+        .env("TMPDIR", temp.path())
+        .env("TMP", temp.path())
+        .env("TEMP", temp.path())
         .args(["--noEmit", "--project"])
         .arg(project_path)
+        .arg("--tsBuildInfoFile")
+        .arg(temp.path().join("validation.tsbuildinfo"))
         .output()
-        .map_err(|error| CompilerFailure::Launch {
-            compiler: compiler.clone(),
-            error,
-        })?;
-    if output.status.success() {
-        return Ok(());
+        .map_err(|error| CompilerFailure::Launch { compiler, error })
+        .and_then(|output| {
+            if output.status.success() {
+                return Ok(());
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let diagnostics = if stderr.trim().is_empty() {
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            } else {
+                stderr.into_owned()
+            };
+            Err(CompilerFailure::Diagnostics {
+                status: output.status,
+                output: diagnostics.trim().to_string(),
+            })
+        });
+    if let Err(error) = temp.close() {
+        let prior = match result {
+            Ok(()) => String::new(),
+            Err(CompilerFailure::Launch { compiler, error }) => {
+                format!("Compiler {} could not start: {error}\n", compiler.display())
+            }
+            Err(CompilerFailure::Diagnostics { output, .. }) => format!("{output}\n"),
+            Err(CompilerFailure::Cleanup { message }) => format!("{message}\n"),
+        };
+        return Err(CompilerFailure::Cleanup {
+            message: format!(
+                "{prior}Could not clean temporary compiler validation directory: {error}"
+            ),
+        });
     }
-    let diagnostics = String::from_utf8_lossy(&output.stderr);
-    let diagnostics = if diagnostics.trim().is_empty() {
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    } else {
-        diagnostics.into_owned()
-    };
-    Err(CompilerFailure::Diagnostics {
-        status: output.status,
-        output: diagnostics.trim().to_string(),
-    })
+    result
 }
 
 fn resolve_vue_compiler(project_root: &Path) -> PathBuf {

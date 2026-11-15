@@ -14,3 +14,12 @@ restoration when cleanup reports an error.
 
 Relevant code: `crates/type-tune-cli/src/preview.rs`, `crates/type-tune-cli/src/commit.rs`,
 `crates/type-tune-core/src/transaction.rs`, and `crates/type-tune-cli/tests/review_destination.rs`.
+
+## Compiler build information
+
+Real TypeScript 6.0.3 and vue-tsc can write build information even under `--noEmit`, including
+on validation failure. `compiler.rs` redirects each compiler to a fresh private build-info path and
+private scratch directory, reports cleanup errors, and does not alter the project cache. This
+prevents the observed build-info leak but is not a sandbox for arbitrary compiler or plugin writes.
+The real-compiler tests in `crates/type-tune-cli/tests/vue_tsc_apply.rs` snapshot project contents,
+directories and symlinks across successful and failed validation. See `docs/compiler-validation.md`.

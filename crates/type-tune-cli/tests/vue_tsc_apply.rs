@@ -410,6 +410,340 @@ fn valid_default_import_fixtures_typecheck_and_keep_named_imports_independent() 
     );
 }
 
+fn artifact_fixture(options: &str, vue: bool) -> RealFixture {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "type-tune-artifact-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let fixture = RealFixture { root };
+    fixture.write(
+        "tsconfig.json",
+        &format!(r#"{{"compilerOptions":{{{options}}},"include":["src/**/*.ts","src/**/*.vue"]}}"#),
+    );
+    fixture.write("src/model.ts", "export interface User { id: string }\n");
+    fixture.write(
+        "src/one.ts",
+        "import type { User } from './model'; export type One = User;\n",
+    );
+    fixture.write(
+        "src/two.ts",
+        "import type { User } from './model'; export type Two = User;\n",
+    );
+    if vue {
+        fixture.write("src/Card.vue", CARD);
+    }
+    link_repository_modules(&repo, &fixture.root);
+    fixture
+}
+
+fn approve_artifact_fixture(fixture: &RealFixture) {
+    let plan = fixture.run(&[
+        "plan",
+        "--project",
+        "tsconfig.json",
+        "--out",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+    ]);
+    assert!(plan.status.success(), "{}", output_text(&plan));
+    select_symbol(fixture, "User");
+}
+
+fn validate_artifact_fixture(fixture: &RealFixture, vue: bool) -> Output {
+    Command::new(fixture.root.join(if vue {
+        "node_modules/.bin/vue-tsc"
+    } else {
+        "node_modules/.bin/tsc"
+    }))
+    .current_dir(&fixture.root)
+    .args(["--noEmit", "--project", "tsconfig.json"])
+    .output()
+    .unwrap()
+}
+
+#[test]
+#[ignore = "requires pinned TypeScript; run cargo test --test vue_tsc_apply -- --ignored"]
+fn compiler_artifacts_are_isolated_for_reviewed_apply() {
+    for options in [
+        r#""composite":true,"outDir":"dist""#,
+        r#""incremental":true,"rootDir":"src","tsBuildInfoFile":"cache/nested/state.tsbuildinfo""#,
+    ] {
+        let fixture = artifact_fixture(options, false);
+        approve_artifact_fixture(&fixture);
+        let before = project_snapshot(&fixture.root);
+        for _ in 0..2 {
+            let dry = fixture.run(&[
+                "apply",
+                "--plan",
+                "plan.json",
+                "--markdown",
+                "plan.md",
+                "--dry-run",
+            ]);
+            assert!(dry.status.success(), "{}", output_text(&dry));
+            assert!(
+                project_snapshot(&fixture.root) == before,
+                "dry-run changed project snapshot"
+            );
+        }
+        let native = validate_artifact_fixture(&fixture, false);
+        assert!(native.status.success(), "{}", output_text(&native));
+        let artifact = if options.contains("composite") {
+            "dist/tsconfig.tsbuildinfo"
+        } else {
+            "cache/nested/state.tsbuildinfo"
+        };
+        let artifact_bytes =
+            fs::read(fixture.root.join(artifact)).expect("native compiler writes build info");
+        let with_artifact = project_snapshot(&fixture.root);
+        let dry = fixture.run(&[
+            "apply",
+            "--plan",
+            "plan.json",
+            "--markdown",
+            "plan.md",
+            "--dry-run",
+        ]);
+        assert!(dry.status.success(), "{}", output_text(&dry));
+        assert!(
+            project_snapshot(&fixture.root) == with_artifact,
+            "dry-run changed existing artifact or another file"
+        );
+        let apply = fixture.run(&["apply", "--plan", "plan.json", "--markdown", "plan.md"]);
+        assert!(apply.status.success(), "{}", output_text(&apply));
+        assert_eq!(
+            fs::read(fixture.root.join(artifact)).unwrap(),
+            artifact_bytes
+        );
+        assert!(fixture.root.join("src/types/src.ts").is_file());
+        assert!(validate_artifact_fixture(&fixture, false).status.success());
+    }
+    let fixture = artifact_fixture(r#""composite":true,"outDir":"dist""#, false);
+    approve_artifact_fixture(&fixture);
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--markdown", "plan.md"]);
+    assert!(apply.status.success(), "{}", output_text(&apply));
+    assert!(fixture.root.join("src/types/src.ts").is_file());
+    assert!(
+        !fixture.root.join("dist").exists(),
+        "successful apply left build info"
+    );
+}
+
+#[test]
+#[ignore = "requires pinned TypeScript; run cargo test --test vue_tsc_apply -- --ignored"]
+fn compiler_failure_restores_project_without_build_info() {
+    let fixture = artifact_fixture(
+        r#""incremental":true,"tsBuildInfoFile":"cache/nested/state.tsbuildinfo""#,
+        false,
+    );
+    fixture.write("src/broken.ts", "export const broken: string = 42;\n");
+    approve_artifact_fixture(&fixture);
+    let before = project_snapshot(&fixture.root);
+    for dry in [true, false] {
+        let mut args = vec!["apply", "--plan", "plan.json", "--markdown", "plan.md"];
+        if dry {
+            args.push("--dry-run");
+        }
+        let result = fixture.run(&args);
+        assert!(!result.status.success(), "compiler error must fail");
+        assert!(
+            output_text(&result).contains("TS2322"),
+            "{}",
+            output_text(&result)
+        );
+        assert!(
+            project_snapshot(&fixture.root) == before,
+            "failed validation changed project snapshot"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires pinned Vue and vue-tsc; run cargo test --test vue_tsc_apply -- --ignored"]
+fn vue_compiler_validation_isolates_build_info_on_success_and_failure() {
+    let options = r#""composite":true,"outDir":"cache/nested","target":"ESNext","module":"ESNext","moduleResolution":"Bundler","jsx":"preserve","skipLibCheck":true"#;
+    let fixture = artifact_fixture(options, true);
+    approve_artifact_fixture(&fixture);
+    let before = project_snapshot(&fixture.root);
+    let dry = fixture.run(&[
+        "apply",
+        "--plan",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--dry-run",
+    ]);
+    assert!(dry.status.success(), "{}", output_text(&dry));
+    assert!(
+        project_snapshot(&fixture.root) == before,
+        "Vue dry-run changed snapshot"
+    );
+    let native = validate_artifact_fixture(&fixture, true);
+    assert!(native.status.success(), "{}", output_text(&native));
+    assert!(
+        fixture
+            .root
+            .join("cache/nested/tsconfig.tsbuildinfo")
+            .is_file(),
+        "real vue-tsc must write build info"
+    );
+    let with_artifact = project_snapshot(&fixture.root);
+    let dry = fixture.run(&[
+        "apply",
+        "--plan",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--dry-run",
+    ]);
+    assert!(dry.status.success(), "{}", output_text(&dry));
+    assert!(
+        project_snapshot(&fixture.root) == with_artifact,
+        "Vue dry-run changed existing build info"
+    );
+
+    let broken = artifact_fixture(options, true);
+    broken.write("src/Card.vue", &CARD.replace("user.id", "user.missing"));
+    let tsc = validate_artifact_fixture(&broken, false);
+    assert!(tsc.status.success(), "{}", output_text(&tsc));
+    approve_artifact_fixture(&broken);
+    let before = project_snapshot(&broken.root);
+    for dry in [true, false] {
+        let mut args = vec!["apply", "--plan", "plan.json", "--markdown", "plan.md"];
+        if dry {
+            args.push("--dry-run");
+        }
+        let result = broken.run(&args);
+        assert!(!result.status.success());
+        assert!(
+            output_text(&result).contains("vue-tsc validation failed"),
+            "{}",
+            output_text(&result)
+        );
+        assert!(
+            project_snapshot(&broken.root) == before,
+            "failed Vue validation changed snapshot"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires pinned TypeScript; run cargo test --test vue_tsc_apply -- --ignored"]
+fn redirects_inherited_and_external_artifact_paths() {
+    let external = artifact_fixture(r#""noEmit":true"#, false);
+    external.write("sentinel.tsbuildinfo", "do not overwrite");
+    let sentinel = external.root.join("sentinel.tsbuildinfo");
+    for artifact in [
+        sentinel.clone(),
+        external.root.join("missing/nested/output.tsbuildinfo"),
+    ] {
+        let value = serde_json::to_string(&artifact.to_string_lossy().to_string()).unwrap();
+        let fixture = artifact_fixture(
+            &format!(r#""incremental":true,"tsBuildInfoFile":{value}"#),
+            false,
+        );
+        approve_artifact_fixture(&fixture);
+        let before = project_snapshot(&fixture.root);
+        let outside = project_snapshot(&external.root);
+        let result = fixture.run(&[
+            "apply",
+            "--plan",
+            "plan.json",
+            "--markdown",
+            "plan.md",
+            "--dry-run",
+        ]);
+        assert!(result.status.success(), "{}", output_text(&result));
+        assert!(project_snapshot(&fixture.root) == before);
+        assert!(
+            project_snapshot(&external.root) == outside,
+            "external file or directory changed"
+        );
+    }
+    let fixture = artifact_fixture(r#""noEmit":true"#, false);
+    let outside_name = external.root.file_name().unwrap().to_string_lossy();
+    fixture.write("tsconfig.json", &format!(r#"{{"compilerOptions":{{"incremental":true,"tsBuildInfoFile":"../{outside_name}/sentinel.tsbuildinfo"}},"include":["src"]}}"#));
+    approve_artifact_fixture(&fixture);
+    let before = project_snapshot(&fixture.root);
+    let outside = project_snapshot(&external.root);
+    let result = fixture.run(&[
+        "apply",
+        "--plan",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--dry-run",
+    ]);
+    assert!(result.status.success(), "{}", output_text(&result));
+    assert!(
+        project_snapshot(&fixture.root) == before && project_snapshot(&external.root) == outside
+    );
+
+    let fixture = artifact_fixture(r#""noEmit":true"#, false);
+    fixture.write(
+        "base.json",
+        r#"{"compilerOptions":{"incremental":true,"tsBuildInfoFile":"cache/state.tsbuildinfo"}}"#,
+    );
+    fixture.write(
+        "tsconfig.json",
+        r#"{"extends":"./base.json","include":["src"]}"#,
+    );
+    approve_artifact_fixture(&fixture);
+    let before = project_snapshot(&fixture.root);
+    let result = fixture.run(&[
+        "apply",
+        "--plan",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--dry-run",
+    ]);
+    assert!(result.status.success(), "{}", output_text(&result));
+    assert!(
+        project_snapshot(&fixture.root) == before,
+        "inherited artifact leaked"
+    );
+    let native = validate_artifact_fixture(&fixture, false);
+    assert!(native.status.success(), "{}", output_text(&native));
+    assert!(fixture.root.join("cache/state.tsbuildinfo").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires pinned TypeScript; run cargo test --test vue_tsc_apply -- --ignored"]
+fn redirects_build_info_through_symlink_without_touching_target() {
+    let outside = artifact_fixture(r#""noEmit":true"#, false);
+    outside.write("state.tsbuildinfo", "preserve this user file");
+    let fixture = artifact_fixture(
+        r#""incremental":true,"tsBuildInfoFile":"cache/state.tsbuildinfo""#,
+        false,
+    );
+    std::os::unix::fs::symlink(&outside.root, fixture.root.join("cache")).unwrap();
+    approve_artifact_fixture(&fixture);
+    let before = project_snapshot(&fixture.root);
+    let outside_before = project_snapshot(&outside.root);
+    let result = fixture.run(&[
+        "apply",
+        "--plan",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--dry-run",
+    ]);
+    assert!(result.status.success(), "{}", output_text(&result));
+    assert!(project_snapshot(&fixture.root) == before);
+    assert!(project_snapshot(&outside.root) == outside_before);
+}
+
 struct RealFixture {
     root: PathBuf,
 }
@@ -435,8 +769,11 @@ impl RealFixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        let temporary = self.root.join("temporary");
+        fs::create_dir_all(&temporary).unwrap();
         Command::new(env!("CARGO_BIN_EXE_type-tune"))
             .current_dir(&self.root)
+            .env("TMPDIR", temporary)
             .args(args)
             .output()
             .unwrap()
@@ -529,14 +866,14 @@ fn replace_once(source: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
 struct ProjectSnapshot {
     directories: BTreeSet<String>,
     files: BTreeMap<String, Vec<u8>>,
-    symlinks: BTreeSet<String>,
+    symlinks: BTreeMap<String, PathBuf>,
 }
 
 fn project_snapshot(root: &Path) -> ProjectSnapshot {
     let mut snapshot = ProjectSnapshot {
         directories: BTreeSet::new(),
         files: BTreeMap::new(),
-        symlinks: BTreeSet::new(),
+        symlinks: BTreeMap::new(),
     };
     collect_project_entries(root, root, &mut snapshot);
     snapshot
@@ -554,7 +891,7 @@ fn collect_project_entries(root: &Path, dir: &Path, snapshot: &mut ProjectSnapsh
         });
         let path = entry.path();
         let name = entry.file_name();
-        if name == "node_modules" {
+        if dir == root && name == "node_modules" {
             continue;
         }
         let metadata = fs::symlink_metadata(&path)
@@ -568,7 +905,9 @@ fn collect_project_entries(root: &Path, dir: &Path, snapshot: &mut ProjectSnapsh
             .replace('\\', "/");
         let file_type = metadata.file_type();
         if file_type.is_symlink() {
-            snapshot.symlinks.insert(relative);
+            snapshot
+                .symlinks
+                .insert(relative, fs::read_link(&path).unwrap());
             continue;
         }
         if file_type.is_dir() {
@@ -587,7 +926,7 @@ fn assert_no_transaction_artifacts(snapshot: &ProjectSnapshot) {
         .directories
         .iter()
         .chain(snapshot.files.keys())
-        .chain(snapshot.symlinks.iter())
+        .chain(snapshot.symlinks.keys())
         .filter(|path| path.contains(".type-tune-"))
         .cloned()
         .collect::<Vec<_>>();

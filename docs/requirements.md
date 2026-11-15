@@ -25,6 +25,10 @@ project—without deciding on the developer's behalf that every shared type shou
 The project-local TypeScript compiler is used for final validation. A project should therefore have
 TypeScript available in its dependencies before an apply operation. Moves that change a `.vue`
 file also require `vue-tsc`, because `tsc` does not typecheck single-file components.
+Compiler validation redirects TypeScript build-info output to private temporary files, which are
+removed after validation. Existing project build-info files are left unchanged on successful apply,
+dry-run, and validation failure. This does not sandbox arbitrary compiler or plugin side effects;
+see [compiler validation](compiler-validation.md) for the supported contract and limitations.
 
 ## Scan requirements
 
