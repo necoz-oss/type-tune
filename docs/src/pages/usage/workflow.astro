@@ -26,6 +26,13 @@ import TextLink from "../../shared/ui/text-link.astro";
       <TextLink href="/usage/getting-started">Getting started</TextLink>.
     </p>
 
+    <p>
+      Configurations with project references are not yet supported. Scan, plan, extract, and apply
+      exit with an error because a single-config analysis cannot cover the referenced projects.
+      A reference-free child may be analyzable but does not guarantee workspace-wide coverage;
+      generated configurations can also exceed the inferred project boundary.
+    </p>
+
     <ol class="workflow-list content-section">
       <li>
         <strong>Scan candidates.</strong>

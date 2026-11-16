@@ -384,6 +384,50 @@ mod tests {
     use super::{load_package_module_aliases, load_project_config};
 
     #[test]
+    fn selected_project_references_are_checked_without_inheriting_or_traversing_them() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("tsconfig.json");
+        for references in [
+            r#"[{"path":"./missing"}]"#,
+            r#"[{"path":"../outside"},{"path":"./tsconfig.json"}]"#,
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"files":[],"references":{references}}}"#),
+            )
+            .unwrap();
+            let error = load_project_config(&path).unwrap_err().to_string();
+            assert!(error.contains("project references"), "{error}");
+        }
+        for references in [
+            "null",
+            "{}",
+            "[1]",
+            "[{}]",
+            r#"[{"path":""}]"#,
+            r#"[{"path":42}]"#,
+        ] {
+            std::fs::write(&path, format!(r#"{{"references":{references}}}"#)).unwrap();
+            let error = load_project_config(&path).unwrap_err().to_string();
+            assert!(error.contains("Invalid project references"), "{error}");
+        }
+        std::fs::write(
+            root.path().join("base.json"),
+            r#"{"references":[{"path":"./missing"}]}"#,
+        )
+        .unwrap();
+        for content in [
+            r#"{"extends":"./base.json"}"#,
+            r#"{"extends":"./base.json","references":[]}"#,
+            r#"{"references":[]}"#,
+            "{}",
+        ] {
+            std::fs::write(&path, content).unwrap();
+            load_project_config(&path).expect("reference-free selected config");
+        }
+    }
+
+    #[test]
     fn uses_explicit_include_patterns() {
         let path = std::env::temp_dir().join(format!(
             "type-tune-{}.json",

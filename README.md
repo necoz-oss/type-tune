@@ -57,6 +57,11 @@ pnpm exec type-tune scan --project tsconfig.json
 
 Without a local install, `npx type-tune scan --project tsconfig.json` downloads the package for that invocation. The project should have TypeScript available: dry-run and apply prefer `node_modules/.bin/tsc`, then `tsc` on `PATH`.
 
+Configurations declaring project references are currently unsupported: scan, plan, extract, apply,
+and dry-run exit with an error instead of returning incomplete analysis. Selecting a reference-free
+child may be appropriate, but does not establish workspace-wide coverage. Generated configuration
+paths can also exceed the currently inferred project boundary. See [project reference limitations](docs/design/project-references.md).
+
 ## Quick Start
 
 Start from a clean Git working tree so the rewrite diff stays easy to review. The commands below use `pnpm exec` after `pnpm add -D type-tune`. After `npm install -D type-tune`, use `npx type-tune` with the same arguments.
