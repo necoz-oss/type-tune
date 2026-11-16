@@ -12,3 +12,8 @@ The pinned compilers reject disabling incremental compilation for composite proj
 - After: real pinned `tsc` and `vue-tsc` tests compare filesystem snapshots for new/existing/default/custom/inherited/external/symlinked build-info paths, repeated previews, failed TypeScript and Vue validation, and successful apply.
 - CI's existing `pnpm test:vue-tsc` equivalent runs the real-compiler tests; `pnpm check` covers Rust and compatibility fixtures.
 - Public Vue 3 RealWorld: native baseline typecheck/build, reviewed dry-run and apply, full clone snapshot comparison after dry-run, and native post-apply typecheck/build passed. Dependencies were a symlink to an existing disposable copy and were not traversed in the snapshot.
+
+
+## Legacy compiler correction
+
+The original unconditional override caused TS5069 on valid non-incremental TypeScript 4.9.5 and 5.5.4 projects. The selected compiler now resolves effective options with `--showConfig` before validation; only incremental or composite configurations receive the isolated build-info path. Failed or malformed inspection fails closed. Real pinned TypeScript 4.9.5, 5.5.4, 5.8.3 and 6.0.3 regression tests run through `pnpm test:compiler-versions` after `npm ci --ignore-scripts --prefix tests/compiler-versions`; CI installs and runs them explicitly. Existing Vue compiler tests remain in place.

@@ -53,6 +53,11 @@ jobs:
       - name: Test Vue script rewrites with vue-tsc
         run: cargo test --test vue_tsc_apply -- --ignored --nocapture
 
+      - name: Test pinned legacy compiler compatibility
+        run: |
+          npm ci --ignore-scripts --prefix tests/compiler-versions
+          cargo test --test compiler_versions -- --ignored --nocapture
+
       - name: Verify CLI movement fixture
         run: node scripts/verify-movement-fixture.mjs
 

@@ -223,6 +223,11 @@ fn write_compiler_stub(root: &std::path::Path, name: &str, body: &str) {
     let directory = root.join("node_modules/.bin");
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join(name);
+    let body = body.replacen(
+        "#!/bin/sh\n",
+        "#!/bin/sh\nif [ \"$1\" = --showConfig ]; then echo '{\"compilerOptions\":{}}'; exit 0; fi\n",
+        1,
+    );
     fs::write(&path, body).unwrap();
     #[cfg(unix)]
     {
