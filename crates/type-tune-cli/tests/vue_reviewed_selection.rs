@@ -85,7 +85,7 @@ fn stub_compilers(root: &Path) {
         let directory = root.join("node_modules/.bin");
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join(name);
-        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(&path, "#!/bin/sh\nif [ \"$1\" = --showConfig ]; then echo '{\"compilerOptions\":{}}'; fi\nexit 0\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -315,7 +315,7 @@ fn typescript_only_approval_ignores_vue_candidates_without_vue_tsc() {
     let directory = fixture.0.join("node_modules/.bin");
     fs::create_dir_all(&directory).unwrap();
     let tsc = directory.join("tsc");
-    fs::write(&tsc, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::write(&tsc, "#!/bin/sh\nif [ \"$1\" = --showConfig ]; then echo '{\"compilerOptions\":{}}'; fi\nexit 0\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

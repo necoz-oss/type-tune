@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "name": "type-tune-compiler-versions",
+  "version": "1.0.0",
+  "dependencies": {
+    "typescript49": "npm:typescript@4.9.5",
+    "typescript55": "npm:typescript@5.5.4",
+    "typescript58": "npm:typescript@5.8.3"
+  }
+}

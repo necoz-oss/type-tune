@@ -72,7 +72,9 @@ stale plan later.
 and executes a transaction. It moves the declaration and its safe local type dependencies, updates
 relative, alias, or simple barrel imports, and preserves compatibility re-exports where needed.
 It then runs the project-local TypeScript compiler. When the rewrite changes a `.vue` file, it also
-runs `vue-tsc` because `tsc` does not typecheck single-file components. A missing `vue-tsc`, a
+runs `vue-tsc` because `tsc` does not typecheck single-file components. Each compiler is inspected for its effective options; incremental and composite validation uses a
+fresh temporary build-info path rather than the project cache; see
+[compiler validation](compiler-validation.md) for cleanup and limitations. A missing `vue-tsc`, a
 compiler failure, or an operational error rolls the transaction back. `--dry-run` follows that same
 path and always rolls the changes back.
 

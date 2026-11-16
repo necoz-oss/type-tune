@@ -22,6 +22,7 @@ pub fn validate_typescript_project(project_root: &Path, project_path: &Path) -> 
             "Could not run TypeScript compiler {}: {error}",
             compiler.display()
         ))),
+        Err(CompilerFailure::Cleanup { message }) => Err(TypeTuneError::new(message)),
         Err(CompilerFailure::Diagnostics { status, output }) => Err(TypeTuneError::new(format!(
             "TypeScript compiler validation failed ({}): {}",
             status, output
@@ -45,10 +46,14 @@ pub fn validate_typescript_project_diagnostics(
             compiler.display()
         )),
         Err(CompilerFailure::Diagnostics { output, .. }) => Err(output),
+        Err(CompilerFailure::Cleanup { message }) => Err(message),
     }
 }
 
 enum CompilerFailure {
+    Cleanup {
+        message: String,
+    },
     Launch {
         compiler: PathBuf,
         error: std::io::Error,
@@ -63,29 +68,11 @@ fn run_typescript_compiler(
     project_root: &Path,
     project_path: &Path,
 ) -> std::result::Result<(), CompilerFailure> {
-    let compiler = resolve_typescript_compiler(project_root);
-    let output = Command::new(&compiler)
-        .current_dir(project_root)
-        .args(["--noEmit", "--project"])
-        .arg(project_path)
-        .output()
-        .map_err(|error| CompilerFailure::Launch {
-            compiler: compiler.clone(),
-            error,
-        })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let diagnostics = String::from_utf8_lossy(&output.stderr);
-    let diagnostics = if diagnostics.trim().is_empty() {
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    } else {
-        diagnostics.into_owned()
-    };
-    Err(CompilerFailure::Diagnostics {
-        status: output.status,
-        output: diagnostics.trim().to_string(),
-    })
+    run_compiler(
+        resolve_typescript_compiler(project_root),
+        project_root,
+        project_path,
+    )
 }
 
 /// Validates Vue script edits with a project-local `vue-tsc` when a rewrite changes `.vue` files.
@@ -117,6 +104,7 @@ pub fn validate_vue_script_edits(
         Err(CompilerFailure::Diagnostics { output, .. }) => {
             Err(format!("vue-tsc validation failed: {output}"))
         }
+        Err(CompilerFailure::Cleanup { message }) => Err(message),
     }
 }
 
@@ -124,29 +112,134 @@ fn run_vue_compiler(
     project_root: &Path,
     project_path: &Path,
 ) -> std::result::Result<(), CompilerFailure> {
-    let compiler = resolve_vue_compiler(project_root);
-    let output = Command::new(&compiler)
+    run_compiler(
+        resolve_vue_compiler(project_root),
+        project_root,
+        project_path,
+    )
+}
+
+// A fresh build-info file avoids both writes to the project's configured artifact and
+// reuse of potentially stale incremental state. No other compiler side effects are sandboxed.
+fn run_compiler(
+    compiler: PathBuf,
+    project_root: &Path,
+    project_path: &Path,
+) -> std::result::Result<(), CompilerFailure> {
+    let temp = tempfile::Builder::new()
+        .prefix("type-tune-compiler-")
+        .tempdir()
+        .map_err(|error| CompilerFailure::Cleanup {
+            message: format!("Could not create temporary compiler validation directory: {error}"),
+        })?;
+    let result = inspect_build_info(&compiler, project_root, project_path, temp.path()).and_then(
+        |needs_build_info| {
+            let mut command = Command::new(&compiler);
+            command
+                .current_dir(project_root)
+                .env("TMPDIR", temp.path())
+                .env("TMP", temp.path())
+                .env("TEMP", temp.path())
+                .args(["--noEmit", "--project"])
+                .arg(project_path);
+            if needs_build_info {
+                command
+                    .arg("--tsBuildInfoFile")
+                    .arg(temp.path().join("validation.tsbuildinfo"));
+            }
+            compiler_output(command, &compiler)
+        },
+    );
+    if let Err(error) = temp.close() {
+        let prior = match result {
+            Ok(()) => String::new(),
+            Err(CompilerFailure::Launch { compiler, error }) => {
+                format!("Compiler {} could not start: {error}\n", compiler.display())
+            }
+            Err(CompilerFailure::Diagnostics { output, .. }) => format!("{output}\n"),
+            Err(CompilerFailure::Cleanup { message }) => format!("{message}\n"),
+        };
+        return Err(CompilerFailure::Cleanup {
+            message: format!(
+                "{prior}Could not clean temporary compiler validation directory: {error}"
+            ),
+        });
+    }
+    result
+}
+
+// Ask the actual compiler to resolve inheritance, including package-based extends. If the
+// effective options cannot be inspected, fail closed rather than running without isolation.
+fn inspect_build_info(
+    compiler: &Path,
+    project_root: &Path,
+    project_path: &Path,
+    temp: &Path,
+) -> std::result::Result<bool, CompilerFailure> {
+    let output = Command::new(compiler)
         .current_dir(project_root)
-        .args(["--noEmit", "--project"])
+        .env("TMPDIR", temp)
+        .env("TMP", temp)
+        .env("TEMP", temp)
+        .args(["--showConfig", "--project"])
         .arg(project_path)
         .output()
         .map_err(|error| CompilerFailure::Launch {
-            compiler: compiler.clone(),
+            compiler: compiler.to_path_buf(),
             error,
         })?;
-    if output.status.success() {
-        return Ok(());
+    if !output.status.success() {
+        return Err(CompilerFailure::Diagnostics {
+            status: output.status,
+            output: diagnostics(&output),
+        });
     }
-    let diagnostics = String::from_utf8_lossy(&output.stderr);
-    let diagnostics = if diagnostics.trim().is_empty() {
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    } else {
-        diagnostics.into_owned()
+    let config: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        CompilerFailure::Cleanup {
+            message: format!("Could not inspect effective compiler configuration from {} --showConfig: {error}. Ensure the selected compiler supports --showConfig.", compiler.display()),
+        }
+    })?;
+    let options = config.get("compilerOptions").and_then(serde_json::Value::as_object).ok_or_else(|| CompilerFailure::Cleanup {
+        message: format!("Could not inspect effective compiler options from {} --showConfig; refusing unsafe validation.", compiler.display()),
+    })?;
+    let get_bool = |key: &str| -> std::result::Result<bool, CompilerFailure> {
+        match options.get(key) {
+            None => Ok(false),
+            Some(value) => value.as_bool().ok_or_else(|| CompilerFailure::Cleanup {
+                message: format!("Invalid effective compiler option {key} in --showConfig output; refusing unsafe validation."),
+            }),
+        }
     };
-    Err(CompilerFailure::Diagnostics {
-        status: output.status,
-        output: diagnostics.trim().to_string(),
-    })
+    let incremental = get_bool("incremental")?;
+    let composite = get_bool("composite")?;
+    Ok(incremental || composite)
+}
+
+fn compiler_output(
+    mut command: Command,
+    compiler: &Path,
+) -> std::result::Result<(), CompilerFailure> {
+    let output = command.output().map_err(|error| CompilerFailure::Launch {
+        compiler: compiler.to_path_buf(),
+        error,
+    })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(CompilerFailure::Diagnostics {
+            status: output.status,
+            output: diagnostics(&output),
+        })
+    }
+}
+
+fn diagnostics(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.trim().is_empty() {
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    } else {
+        stderr.trim().to_owned()
+    }
 }
 
 fn resolve_vue_compiler(project_root: &Path) -> PathBuf {
@@ -197,6 +290,22 @@ mod tests {
     };
 
     use super::{resolve_typescript_compiler, tsc_binary_name};
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_inspection_output_does_not_run_unisolated_validation() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let compiler = root.path().join("compiler");
+        fs::write(&compiler, "#!/bin/sh\nif [ \"$1\" = --showConfig ]; then echo not-json; exit 0; fi\ntouch validation-ran\n").unwrap();
+        fs::set_permissions(&compiler, fs::Permissions::from_mode(0o755)).unwrap();
+        let result =
+            super::run_compiler(compiler, root.path(), std::path::Path::new("tsconfig.json"));
+        assert!(
+            matches!(result, Err(super::CompilerFailure::Cleanup { message }) if message.contains("Could not inspect"))
+        );
+        assert!(!root.path().join("validation-ran").exists());
+    }
 
     #[test]
     fn prefers_a_project_local_typescript_compiler() {
