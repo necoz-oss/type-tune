@@ -15,6 +15,7 @@ pub(super) fn load_extending_config(
     seen: &mut BTreeSet<PathBuf>,
     contributes_to_project_root: bool,
 ) -> Result<LoadedConfig> {
+    let selected = seen.is_empty();
     let canonical_path = fs::canonicalize(path).map_err(|error| {
         TypeTuneError::new(format!("Could not read {}: {error}", path.display()))
     })?;
@@ -31,6 +32,39 @@ pub(super) fn load_extending_config(
         ))
     })?;
     let content = normalize_jsonc(&content)?;
+    if selected {
+        let value: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
+            TypeTuneError::new(format!(
+                "Could not parse {}: {error}",
+                canonical_path.display()
+            ))
+        })?;
+        if let Some(references) = value.get("references") {
+            let invalid = || {
+                TypeTuneError::new(format!(
+                    "Invalid project references in {}: expected an array of objects with non-empty string paths.",
+                    canonical_path.display()
+                ))
+            };
+            let entries = references.as_array().ok_or_else(invalid)?;
+            for entry in entries {
+                let path = entry
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(invalid)?;
+                if path.trim().is_empty() {
+                    return Err(invalid());
+                }
+            }
+            if !entries.is_empty() {
+                return Err(TypeTuneError::new(format!(
+                    "TypeScript configuration {} contains unsupported project references ({}). Analysis cannot guarantee complete source and referrer coverage. Select an independently analyzable configuration without references if appropriate; this does not guarantee workspace-wide coverage.",
+                    canonical_path.display(),
+                    entries.len()
+                )));
+            }
+        }
+    }
     let config: TsConfig = serde_json::from_str(&content).map_err(|error| {
         TypeTuneError::new(format!(
             "Could not parse {}: {error}",

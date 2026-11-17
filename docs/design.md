@@ -43,6 +43,11 @@ tooling and is outside this architecture.
 
 ### `scan`
 
+The shared configuration loader rejects selected configs with project references before discovery.
+Apply reloads the config even for existing plans, before rewrites or compiler validation. Reference
+graphs require multiple analysis contexts and are not represented by the current model. See the
+[project references roadmap](design/project-references.md).
+
 `scan --project <tsconfig>` loads the project configuration, discovers TypeScript sources, parses
 them with tree-sitter, and resolves type-only relationships using the project configuration. It
 emits candidates as text or JSON. `--explain` also reports exported declarations intentionally

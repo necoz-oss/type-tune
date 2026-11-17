@@ -12,6 +12,10 @@ project—without deciding on the developer's behalf that every shared type shou
 ## Supported project inputs
 
 - One TypeScript project selected with `--project <tsconfig>`.
+- The selected configuration must not declare non-empty project references. Scan, explain, plan,
+  extract, apply, and dry-run reject them with exit status 1 before analysis or writes; malformed
+  references are also rejected. An absent or empty array is accepted. References in an extended
+  base configuration are not inherited. See [project reference limitations](design/project-references.md).
 - TypeScript and TSX source files included by that project configuration.
 - Vue single-file components included by that same configuration. Supported blocks are
   `<script lang="ts">`, `<script setup lang="ts">`, `<script lang="tsx">`, and
