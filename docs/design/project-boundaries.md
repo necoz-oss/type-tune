@@ -107,6 +107,65 @@ not follow declaration imports, so even a successful scan of a pnpm layout is no
 complete dependency analysis. No external write was demonstrated. Phase 1-C must not be built on
 an assumption that this incomplete scan is a safe authorization boundary.
 
+### Declaration-chain investigation and architecture decision
+
+**Phase 1-B is blocked; successful scans do not establish this contract.** The existing
+`expand_imported_project_files` queue contains discovered implementation sources only. Its
+preflight returns as soon as it sees a declaration, so `index.d.ts` and its outgoing edges are
+never queued for analysis. The ordinary resolver then searches only the implementation universe.
+An external implementation behind that declaration can therefore disappear without a diagnostic.
+The regression `dependency_declaration_cannot_hide_external_source` remains ignored only while
+this known failure is unresolved; it must pass in the default suite before Phase 1-B is complete.
+
+The preserved fixture selects only `src/main.ts`, which imports the bare package `external-pkg`.
+That package's symlinked `package.json` selects `index.d.ts`; that declaration re-exports
+`./hidden-source`, an external `hidden-source.ts`. TypeScript 6.0.3 `--listFilesOnly` exits 0
+and lists all three files. Type-tune `scan --format json` exits 0 with `{"candidates":[]}`.
+Code inspection establishes that its graph queue starts with `src/main.ts`, encounters the
+declaration and returns from preflight, and adds neither the declaration nor the implementation
+edge. The ignored regression, run explicitly, exits 101 because that successful scan should fail.
+Captured fixture and raw outputs for this local investigation are in
+`/tmp/type-tune-import-boundary-evidence/bare-package-source/`; that temporary directory is not
+a durable project artifact.
+
+Three approaches were investigated:
+
+* A compiler-assisted graph could use TypeScript's program and module-resolution APIs. A
+  `--listFilesOnly` result is too late: the compiler has already read sources. A disposable
+  `createCompilerHost` prototype guarded both `getSourceFile` and `readFile` before delegation.
+  With TypeScript 5.5.4, 5.8.3 and 6.0.3, it read the package declaration and rejected the
+  external implementation before those host callbacks read it. This is evidence for that fixture,
+  not a complete filesystem security guarantee. TypeScript 4.9.5 did not follow the fixture's
+  `bundler` resolution mode; ignoring config diagnostics would have produced a false success.
+  A production host must reject unsupported compiler/configuration combinations and intercept
+  every content-read path, including config and package handling as appropriate.
+* Extending the Rust resolver to traverse declaration imports would still need authoritative
+  handling of import types, triple-slash references, package imports, conditions, version ranges,
+  `rootDirs`, extension substitutions, ambient modules and mode-dependent precedence. It is not
+  established that unsupported cases can be detected reliably without duplicating a significant
+  portion of TypeScript. A collection of narrow fallbacks would preserve silent omissions.
+* A hybrid is the preferred next design: use the selected project's compatible TypeScript API to
+  provide program membership and resolution evidence through a guarded host, then independently
+  authorize logical and canonical implementation identities in type-tune. Do not let package
+  names, `node_modules`, declarations or compiler resolution confer authorization. Reconcile
+  every authorized implementation edge with the native import/referrer graph, including sources
+  reached through declaration chains; reject unsupported or unrepresentable edges before scans
+  and mutations. The host must handle declaration cycles and report provenance of rejected edges.
+
+This hybrid is a larger architectural change, not a drop-in resolver fix. The native Rust core
+currently scans without requiring Node or the TypeScript package; the published native package
+contains a binary, while TypeScript is only a development dependency. A supported bridge needs
+an explicit runtime and version policy, a versioned and bounded protocol, robust error handling,
+and integration in the core and every workflow. Vue single-file components also use a separate
+script parser; plain TypeScript program membership does not establish vue-tsc/Nuxt parity. Config
+diagnostics, ambient declarations, type references, package modes, logical symlink identity,
+`preserveSymlinks`, runtime cost and compiler-version support need tests before relying on this
+evidence. Pnpm declaration symlinks require a declaration-specific policy, not blanket rejection.
+The approach must avoid unauthorized implementation reads and preserve no-compiler failure
+semantics deliberately rather than silently falling back to the current incomplete native graph.
+Compiler plugins and other arbitrary compiler behavior, as well as concurrent filesystem
+replacement, remain outside a simple path-check guarantee. Project references remain unsupported.
+
 Prefer an optional `--workspace-root` and corresponding core API argument, canonicalized from the
 caller-supplied path. Reject a missing or non-directory root and a selected configuration outside
 it. The boundary is an authorization limit and path representation base, not an include glob;
