@@ -10,15 +10,9 @@ fn run(project: &std::path::Path, arguments: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
-fn new_fixture() -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "type-tune-boundary-extra-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+fn new_fixture() -> tempfile::TempDir {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
     fs::create_dir_all(root.join("project/src")).unwrap();
     fs::create_dir(root.join("external")).unwrap();
     fs::write(
@@ -39,7 +33,7 @@ fn new_fixture() -> std::path::PathBuf {
     for name in ["first", "second"] {
         fs::write(root.join(format!("project/src/{name}.ts")), format!("import type {{ Shared }} from './model'; export const {name} = (x: Shared) => x.name;\n")).unwrap();
     }
-    root
+    fixture
 }
 
 fn snapshot(root: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
@@ -73,7 +67,8 @@ fn snapshot(root: &std::path::Path) -> std::collections::BTreeMap<std::path::Pat
 #[test]
 fn selected_symlinks_reject_all_workflows_before_compilation() {
     use std::os::unix::fs::PermissionsExt;
-    let root = new_fixture();
+    let fixture = new_fixture();
+    let root = fixture.path();
     let project = root.join("project");
     let plan = run(
         &project,
@@ -97,7 +92,7 @@ fn selected_symlinks_reject_all_workflows_before_compilation() {
     let compiler = project.join("node_modules/.bin/tsc");
     fs::write(&compiler, "#!/bin/sh\ntouch compiler-ran\nexit 0\n").unwrap();
     fs::set_permissions(&compiler, fs::Permissions::from_mode(0o755)).unwrap();
-    let before = snapshot(&root);
+    let before = snapshot(root);
     for args in [
         vec!["scan", "--format", "json"],
         vec!["scan", "--explain"],
@@ -126,16 +121,16 @@ fn selected_symlinks_reject_all_workflows_before_compilation() {
         );
         assert!(String::from_utf8_lossy(&output.stderr).contains("outside the project boundary"));
     }
-    assert_eq!(snapshot(&root), before);
+    assert_eq!(snapshot(root), before);
     assert!(!project.join("compiler-ran").exists());
     assert!(!project.join("rejected.json").exists());
     assert!(!project.join("src/types").exists());
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn excluded_and_unrelated_links_are_skipped_but_selected_aliases_fail() {
-    let root = new_fixture();
+    let fixture = new_fixture();
+    let root = fixture.path();
     let project = root.join("project");
     symlink(root.join("external"), project.join("src/external")).unwrap();
     fs::write(
@@ -169,7 +164,6 @@ fn excluded_and_unrelated_links_are_skipped_but_selected_aliases_fail() {
     let output = run(&project, &["scan"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported source symlink"));
-    fs::remove_dir_all(root).unwrap();
 }
 
 // Opening a FIFO for reading blocks until a writer connects. No writer exists here, so an
@@ -182,7 +176,8 @@ fn external_file_is_rejected_without_opening_its_contents() {
         thread,
         time::{Duration, Instant},
     };
-    let root = new_fixture();
+    let fixture = new_fixture();
+    let root = fixture.path();
     let project = root.join("project");
     let fifo = root.join("external/fifo.ts");
     assert!(
@@ -216,12 +211,12 @@ fn external_file_is_rejected_without_opening_its_contents() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("outside the project boundary"));
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn explicit_external_file_and_internal_cycles_are_rejected() {
-    let root = new_fixture();
+    let fixture = new_fixture();
+    let root = fixture.path();
     let project = root.join("project");
     symlink(
         root.join("external/model.ts"),
@@ -242,12 +237,12 @@ fn explicit_external_file_and_internal_cycles_are_rejected() {
     let output = run(&project, &["scan", "--format", "json"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported source symlink"));
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn rejects_chains_aliases_and_selected_broken_links() {
-    let root = new_fixture();
+    let fixture = new_fixture();
+    let root = fixture.path();
     let project = root.join("project");
     symlink(root.join("external"), project.join("src/first-link")).unwrap();
     symlink("first-link", project.join("src/second-link")).unwrap();
@@ -267,12 +262,12 @@ fn rejects_chains_aliases_and_selected_broken_links() {
     let output = run(&project, &["scan"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot resolve relevant symlink"));
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn explicitly_included_package_sources_are_bounded_but_excluded_packages_are_skipped() {
-    let root = new_fixture();
+    let fixture = new_fixture();
+    let root = fixture.path();
     let project = root.join("project");
     fs::create_dir(project.join("node_modules")).unwrap();
     symlink(
@@ -321,22 +316,15 @@ fn explicitly_included_package_sources_are_bounded_but_excluded_packages_are_ski
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn rejects_external_directory_and_file_sources_before_scanning() {
     for directory in [true, false] {
-        let fixture = std::env::temp_dir().join(format!(
-            "type-tune-bounded-{}-{}-{directory}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let project = fixture.join("project");
-        let external = fixture.join("external");
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let project = root.join("project");
+        let external = root.join("external");
         fs::create_dir_all(project.join("src")).unwrap();
         fs::create_dir(&external).unwrap();
         fs::write(
@@ -379,6 +367,5 @@ fn rejects_external_directory_and_file_sources_before_scanning() {
         );
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains("outside the project boundary"));
-        fs::remove_dir_all(fixture).unwrap();
     }
 }
