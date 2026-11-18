@@ -45,15 +45,15 @@ fix:
    rejected as ambiguous; broken relevant links are errors. Excluded and unrelated links are skipped.
    Paths remain logical, project-relative identities; canonical paths are used to diagnose and check
    containment. Dependency metadata and compiler reads have their existing separate behavior.
-2. Import expansion resolves only against the already discovered in-root universe. In a fixture
+2. Before the incremental Phase 1-B checks, import expansion resolved only against the already discovered in-root universe. In a fixture
    where `src/main.ts` imports `../../external/model`, TypeScript listed the external source and
    exited 0; type-tune exited 0 with zero candidates and no boundary diagnostic. A correct boundary
    contract must distinguish such project sources from legitimate external dependency metadata and
-   declarations rather than silently losing program members. The same limitation remains when
+   declarations rather than silently losing program members. The same omission occurred when
    `files` selects only `src/main.ts` and its import resolves through an otherwise unselected
    `src/linked` symlink to an external source: discovery does not traverse that link, but the scan
    still exits successfully with no candidates while TypeScript lists the linked source. This
-   incomplete-analysis case is deferred to the external-import resolution phase.
+   incremental checks below now reject these direct and transitive cases, but other omissions remain.
 
 The native nuxt.com checkout at `71a7374d88f3747658eebb7e2384fc593aa706cc` also reproduced the
 original generated-config rejection: scanning its unmodified `.nuxt/tsconfig.app.json` exited 1
@@ -65,6 +65,47 @@ The historical Vue RealWorld result used `tsconfig.json` at
 not establish complete single-config coverage and the current guard rejects that root.
 
 ## Proposed contract and remaining design work
+
+### Incremental Phase 1-B contract
+
+The existing inferred root remains the boundary. For statically recorded relative imports,
+side-effect imports, re-exports, and configured path aliases, a source-file candidate resolved by
+the supported extension/index rules must be
+inside that root and must not use a symlink in its logical source path. A discovered in-root
+source remains part of the existing import expansion; a resolved source outside that discovered
+universe must fail rather than disappear. Candidate checks inspect filesystem metadata and
+canonical paths before reading source contents. Ordinary unresolved specifiers are distinct from
+a resolved but unsupported project source. Dependency declarations and metadata keep their
+existing handling; their presence under `node_modules` is not proof that an arbitrary TypeScript
+source is authorized.
+
+This incremental contract does **not** establish Phase 1-B completeness: bare package resolution,
+runtime dynamic imports, declarations and TypeScript's
+full resolution precedence need separate investigation and enforcement. In particular, a
+successful scan cannot yet be treated as a complete account of every TypeScript program member.
+No general filesystem sandbox or protection against concurrent replacement is implied.
+
+Before extending this check, a package fixture with a pnpm-style `node_modules` symlink and
+`package.json` containing `"types":"index.ts"` showed that both the old scanner and this
+incremental relative/alias check return success with no candidates, while TypeScript resolves
+the external `.ts` source. Package metadata and `.d.ts` declarations are distinct from source
+files; the presence of a `node_modules` path or a bare name is not an authorization decision.
+The incremental check inspects the nearest package's explicit `types`/`typings` target, a single
+unambiguous nested `types` target in exact or wildcard package exports, and matching
+`typesVersions` alternatives that point at existing sources. It applies the same source identity
+checks while treating declaration targets as dependency inputs. Multiple conditional targets,
+other `typesVersions` shapes, `rootDirs` fallback targets and declaration imports remain outside
+that narrow check and prevent a complete Phase 1-B verdict. An export `types` target can be
+ambiguous when a TypeScript resolution mode ignores exports; the check may conservatively reject
+such a source rather than establish which mode selected it.
+
+This is a confirmed remaining defect, not merely a theoretical limitation: in a disposable
+fixture, `external-pkg` exposed `index.d.ts`, which re-exported `./hidden-source` from an
+external `hidden-source.ts`. TypeScript 6.0.3 included both files and exited successfully; the
+incremental scanner also exited successfully while omitting `hidden-source.ts`. The scanner does
+not follow declaration imports, so even a successful scan of a pnpm layout is not proof of
+complete dependency analysis. No external write was demonstrated. Phase 1-C must not be built on
+an assumption that this incomplete scan is a safe authorization boundary.
 
 Prefer an optional `--workspace-root` and corresponding core API argument, canonicalized from the
 caller-supplied path. Reject a missing or non-directory root and a selected configuration outside

@@ -17,6 +17,7 @@ mod discovery;
 mod filter;
 mod placement;
 mod referrers;
+mod resolution_boundary;
 use declarations::{scan_parsed_declarations, unsupported_dependency_diagnostics};
 use discovery::{load_tsconfig_source_files, read_project_source_pair};
 pub use filter::{

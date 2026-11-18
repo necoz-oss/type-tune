@@ -207,6 +207,31 @@ pub fn parse_source(source: &str) -> Result<ParsedSource> {
     Ok(parsed_source_from_tree(&tree, source))
 }
 
+pub(crate) fn side_effect_import_specifiers(source: &str) -> Result<Vec<String>> {
+    fn visit(node: tree_sitter::Node<'_>, source: &[u8], output: &mut Vec<String>) {
+        if node.kind() == "import_statement" {
+            let mut cursor = node.walk();
+            if !node
+                .named_children(&mut cursor)
+                .any(|child| child.kind() == "import_clause")
+                && let Some(specifier) = node.child_by_field_name("source")
+                && let Ok(value) = specifier.utf8_text(source)
+            {
+                output.push(value.trim_matches(['\'', '"']).to_owned());
+            }
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, output);
+        }
+    }
+    let tree = parse_tree(source)?;
+    let mut result = Vec::new();
+    visit(tree.root_node(), source.as_bytes(), &mut result);
+    Ok(result)
+}
+
 /// TypeScript dialect used for one embedded script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeScriptDialect {
