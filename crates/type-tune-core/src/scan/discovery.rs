@@ -102,7 +102,7 @@ fn discover_included_package_sources(
                 .rsplit_once('/')
                 .map_or("", |(directory, _)| directory)
         };
-        if path_is_excluded(pattern, &config.exclude)
+        if (!pattern.contains(['*', '?']) && path_is_excluded(pattern, &config.exclude))
             || (!literal_prefix.is_empty()
                 && directory_is_excluded(literal_prefix, &config.exclude))
         {

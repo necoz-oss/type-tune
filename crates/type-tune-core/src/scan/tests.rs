@@ -219,6 +219,44 @@ fn scans_explicit_package_files_and_their_local_imports() {
 }
 
 #[test]
+fn package_glob_exclusion_does_not_hide_a_matching_include() {
+    let root = tempfile::tempdir().expect("creates project");
+    let package = root.path().join("node_modules/pkg");
+    fs::create_dir_all(&package).expect("creates package");
+    fs::write(package.join("foo.ts"), "export interface Included {}")
+        .expect("writes included source");
+    fs::write(package.join("foo1.ts"), "export interface Excluded {}")
+        .expect("writes excluded source");
+    let config = root.path().join("tsconfig.json");
+    fs::write(
+        &config,
+        r#"{"include":["node_modules/pkg/foo*.ts"],"exclude":["node_modules/pkg/foo?*.ts"]}"#,
+    )
+    .expect("writes config");
+    let candidates = scan_tsconfig(&config).expect("scans project");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.symbol_name.as_str())
+            .collect::<Vec<_>>(),
+        ["Included"]
+    );
+    fs::write(
+        &config,
+        r#"{"files":["node_modules/pkg/foo1.ts"],"exclude":["node_modules"]}"#,
+    )
+    .expect("writes explicit file config");
+    let candidates = scan_tsconfig(&config).expect("scans explicit file");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.symbol_name.as_str())
+            .collect::<Vec<_>>(),
+        ["Excluded"]
+    );
+}
+
+#[test]
 fn scans_explicit_package_includes_and_respects_excludes() {
     let root = tempfile::tempdir().expect("creates project");
     for (directory, name) in [
