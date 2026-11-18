@@ -39,13 +39,17 @@ pub fn discover_typescript_files_with_generated(
     root: &Path,
     include_generated: bool,
 ) -> std::io::Result<Vec<PathBuf>> {
-    discover_typescript_files_with_options(root, include_generated, false)
+    Ok(discover_analysis_files(root, include_generated)?
+        .into_iter()
+        .filter(|path| !is_vue_sfc_path(&path.to_string_lossy()))
+        .collect())
 }
 
 /// Recursively returns TypeScript source and declaration files for module resolution.
 ///
 /// Declaration files remain excluded from candidate scanning but are required to resolve imports
-/// while planning a native rewrite.
+/// while planning a native rewrite. Symlinks are skipped; callers must first perform the scoped
+/// project scan, which rejects selected source aliases, before using these rewrite inputs.
 pub fn discover_typescript_resolution_files(
     root: &Path,
     include_generated: bool,
@@ -69,7 +73,284 @@ pub fn discover_analysis_files(
     root: &Path,
     include_generated: bool,
 ) -> std::io::Result<Vec<PathBuf>> {
-    discover_files(root, include_generated, false, true)
+    let canonical = fs::canonicalize(root)?;
+    Ok(
+        discover_scoped_analysis_files(&canonical, include_generated, None, None, &[])?
+            .into_iter()
+            .map(|path| root.join(path.strip_prefix(&canonical).expect("discovery is rooted")))
+            .collect(),
+    )
+}
+
+/// Discovers analysis inputs while rejecting selected symlink aliases.
+///
+/// The logical path remains the source identity; symlink aliases are rejected because two
+/// logical names for the same file cannot safely be merged for module resolution and rewriting.
+///
+/// # Errors
+/// Returns an error for relevant symlinks or inaccessible source directories.
+pub fn discover_scoped_analysis_files(
+    root: &Path,
+    include_generated: bool,
+    files: Option<&[String]>,
+    includes: Option<&[String]>,
+    excludes: &[String],
+) -> io::Result<Vec<PathBuf>> {
+    let mut result = Vec::new();
+    let mut patterns = includes.unwrap_or_default().to_vec();
+    if includes.is_none() && files.is_none() {
+        patterns.push("**/*".into());
+    }
+    if let Some(files) = files {
+        patterns.extend(files.iter().cloned());
+    }
+    visit_scoped(
+        root,
+        root,
+        include_generated,
+        &patterns,
+        files.unwrap_or_default(),
+        excludes,
+        &mut result,
+    )?;
+    result.sort();
+    Ok(result)
+}
+
+/// Rejects a source path that resolves outside the project or through a symlink.
+///
+/// # Errors
+/// Returns an error if the path cannot be resolved or has an unsupported alias.
+pub fn validate_discovery_path(root: &Path, path: &Path) -> io::Result<()> {
+    let real_root = fs::canonicalize(root)?;
+    let resolved = fs::canonicalize(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "Source discovery cannot resolve relevant path {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    if !resolved.starts_with(&real_root) {
+        return Err(io::Error::other(format!(
+            "Source discovery cannot continue: {} resolves outside the project boundary {} (resolved path: {}).",
+            path.display(),
+            real_root.display(),
+            resolved.display()
+        )));
+    }
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| io::Error::other("Source path is outside the project boundary"))?;
+    let mut current = root.to_path_buf();
+    for part in relative.components() {
+        current.push(part);
+        if fs::symlink_metadata(&current)?.file_type().is_symlink() {
+            return Err(io::Error::other(format!(
+                "Source discovery cannot continue: {} is an unsupported source symlink (resolved path: {}).",
+                current.display(),
+                resolved.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_explicit_source_ancestors(root: &Path, path: &Path) -> io::Result<()> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| io::Error::other("Source path is outside the project boundary"))?;
+    let mut current = root.to_path_buf();
+    for part in relative.components() {
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                validate_discovery_path(root, &current)?;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Discovers explicitly selected package sources under the project boundary.
+///
+/// # Errors
+/// Returns an error for paths that escape the boundary or cannot be read.
+pub fn discover_bounded_package_files(
+    root: &Path,
+    directory: &Path,
+    include_generated: bool,
+    files: Option<&[String]>,
+    includes: Option<&[String]>,
+    excludes: &[String],
+) -> io::Result<Vec<PathBuf>> {
+    validate_discovery_path(root, directory)?;
+    let mut result = Vec::new();
+    let mut patterns = includes.unwrap_or_default().to_vec();
+    patterns.extend_from_slice(files.unwrap_or_default());
+    visit_scoped(
+        root,
+        directory,
+        include_generated,
+        &patterns,
+        files.unwrap_or_default(),
+        excludes,
+        &mut result,
+    )?;
+    result.sort();
+    Ok(result)
+}
+
+fn directory_may_match(directory: &str, pattern: &str) -> bool {
+    fn prefix(parts: &[&str], pattern: &[&str], terminal_directory: bool) -> bool {
+        if parts.is_empty() {
+            return !pattern.is_empty() || terminal_directory;
+        }
+        let Some((first, rest)) = pattern.split_first() else {
+            return terminal_directory;
+        };
+        if *first == "**" {
+            prefix(parts, rest, terminal_directory)
+                || prefix(&parts[1..], pattern, terminal_directory)
+        } else {
+            matches(parts[0], first) && prefix(&parts[1..], rest, terminal_directory)
+        }
+    }
+    let last = pattern
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    let terminal_directory =
+        last == "**" || (!last.contains(['*', '?']) && !last_segment_has_extension(last));
+    prefix(
+        &directory.split('/').collect::<Vec<_>>(),
+        &pattern.split('/').collect::<Vec<_>>(),
+        terminal_directory,
+    )
+}
+
+pub(crate) fn directory_is_excluded(directory: &str, excludes: &[String]) -> bool {
+    path_is_excluded(directory, excludes)
+        || excludes.iter().any(|pattern| {
+            pattern
+                .strip_suffix("/**/*")
+                .or_else(|| pattern.strip_suffix("/**"))
+                .is_some_and(|base| matches(directory, base))
+        })
+}
+
+fn visit_scoped(
+    root: &Path,
+    directory: &Path,
+    include_generated: bool,
+    patterns: &[String],
+    explicit: &[String],
+    excludes: &[String],
+    result: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    let mut entries = fs::read_dir(directory)?.collect::<io::Result<Vec<_>>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if ["node_modules", ".git"].contains(&name.as_ref())
+            || (!include_generated && ["generated", "__generated__"].contains(&name.as_ref()))
+        {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .expect("discovery is rooted")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            let explicit_match = explicit
+                .iter()
+                .any(|file| file == &relative || file.starts_with(&format!("{relative}/")));
+            let excluded = (path_is_excluded(&relative, excludes)
+                || directory_is_excluded(&relative, excludes))
+                && !explicit_match;
+            let target = fs::metadata(&path);
+            let directory = target.as_ref().is_ok_and(|metadata| metadata.is_dir());
+            let hidden = relative
+                .split('/')
+                .filter(|part| part.starts_with('.'))
+                .count();
+            let file_match = !directory
+                && is_discovered_file(&path, false, true)
+                && (include_generated || !is_generated_source(&path))
+                && (explicit_match
+                    || patterns.iter().any(|pattern| {
+                        pattern
+                            .split('/')
+                            .filter(|part| part.starts_with('.'))
+                            .count()
+                            >= hidden
+                            && path_is_included(&relative, std::slice::from_ref(pattern))
+                    }));
+            let dir_match = patterns.iter().any(|pattern| {
+                pattern
+                    .split('/')
+                    .filter(|part| part.starts_with('.'))
+                    .count()
+                    >= hidden
+                    && directory_may_match(&relative, pattern)
+            });
+            let unknown_directory = target.is_err()
+                && !is_discovered_file(&path, false, true)
+                && !relative.ends_with(".d.ts");
+            if !excluded && (file_match || ((directory || unknown_directory) && dir_match)) {
+                let resolved = fs::canonicalize(&path).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "Source discovery cannot resolve relevant symlink {}: {error}",
+                            path.display()
+                        ),
+                    )
+                })?;
+                let message = if resolved.starts_with(root) {
+                    format!(
+                        "Source discovery cannot continue: {} is an unsupported source symlink (resolved path: {}).",
+                        path.display(),
+                        resolved.display()
+                    )
+                } else {
+                    format!(
+                        "Source discovery cannot continue: {} resolves outside the project boundary {} (resolved path: {}).",
+                        path.display(),
+                        root.display(),
+                        resolved.display()
+                    )
+                };
+                return Err(io::Error::other(message));
+            }
+            continue;
+        }
+        if metadata.is_dir() {
+            visit_scoped(
+                root,
+                &path,
+                include_generated,
+                patterns,
+                explicit,
+                excludes,
+                result,
+            )?;
+        } else if is_discovered_file(&path, false, true)
+            && (include_generated || !is_generated_source(&path))
+        {
+            result.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn discover_files(
@@ -216,6 +497,9 @@ fn visit_entries(
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
+        if entry.file_type()?.is_symlink() {
+            continue;
+        }
         if path.is_dir() {
             let name = entry.file_name();
             if ["node_modules", ".git"].contains(&name.to_string_lossy().as_ref())
@@ -270,10 +554,19 @@ mod tests {
     #[cfg(unix)]
     use super::read_typescript_source_text;
     use super::{
-        discover_typescript_files, discover_typescript_files_with_generated,
+        directory_may_match, discover_typescript_files, discover_typescript_files_with_generated,
         discover_typescript_resolution_files, filter_project_paths, path_is_excluded,
         path_is_included,
     };
+
+    #[test]
+    fn directory_prefix_matching_respects_glob_depth_and_literal_directories() {
+        assert!(directory_may_match("src/nested", "src/**/*.ts"));
+        assert!(!directory_may_match("src/nested", "src/*.ts"));
+        assert!(!directory_may_match("src/nested.ts", "src/*.ts"));
+        assert!(directory_may_match("src/nested", "src"));
+        assert!(!directory_may_match("src-old", "src/**/*.ts"));
+    }
 
     fn temporary_directory(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -316,15 +609,13 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn skips_directory_symlink_cycles() {
+    fn rejects_directory_symlink_cycles() {
         let root = tempfile::tempdir().expect("creates fixture");
         let source = root.path().join("source.ts");
         fs::write(&source, "export type Shared = string;").expect("writes source");
         symlink(root.path(), root.path().join("loop")).expect("creates cycle");
-        assert_eq!(
-            discover_typescript_files(root.path()).expect("discovers"),
-            [source]
-        );
+        let error = discover_typescript_files(root.path()).expect_err("rejects the alias");
+        assert!(error.to_string().contains("unsupported source symlink"));
     }
 
     #[test]
