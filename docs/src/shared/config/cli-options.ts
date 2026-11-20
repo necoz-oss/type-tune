@@ -60,6 +60,13 @@ export const cliOptionSections: CliOptionSection[] = [
         defaultValue: "false",
         description: "Include generated source files in analysis.",
       },
+      {
+        command: "shared",
+        name: "--compiler-resolution-bridge",
+        defaultValue: "false",
+        description:
+          "Experimental: ask the project-local TypeScript compiler for resolution evidence. This is not the default scan path.",
+      },
     ],
   },
   {
@@ -161,6 +168,13 @@ export const cliOptionSections: CliOptionSection[] = [
         defaultValue: "false",
         description: "Use plan.json statuses without reviewed Markdown.",
       },
+      {
+        command: "apply",
+        name: "--compiler-resolution-bridge",
+        defaultValue: "false",
+        description:
+          "Experimental: re-check compiler resolution evidence before apply or dry-run writes.",
+      },
     ],
   },
   {
@@ -212,6 +226,13 @@ export const cliOptionSections: CliOptionSection[] = [
         name: "--include-generated",
         defaultValue: "false",
         description: "Include generated source files.",
+      },
+      {
+        command: "extract",
+        name: "--compiler-resolution-bridge",
+        defaultValue: "false",
+        description:
+          "Experimental: require compiler resolution evidence before extract or dry-run writes.",
       },
     ],
   },

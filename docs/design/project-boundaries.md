@@ -114,8 +114,11 @@ an assumption that this incomplete scan is a safe authorization boundary.
 preflight returns as soon as it sees a declaration, so `index.d.ts` and its outgoing edges are
 never queued for analysis. The ordinary resolver then searches only the implementation universe.
 An external implementation behind that declaration can therefore disappear without a diagnostic.
-The regression `dependency_declaration_cannot_hide_external_source` remains ignored only while
-this known failure is unresolved; it must pass in the default suite before Phase 1-B is complete.
+The regression `dependency_declaration_cannot_hide_external_source` remains ignored on the native
+path. The durable reproduction is
+`fixtures/compiler-resolution-bridge/declaration-mediated-external/`. The experimental
+`--compiler-resolution-bridge` path rejects that unauthorized source and is covered by the
+compiler-resolution bridge suite. Default scans still do not establish this contract.
 
 The preserved fixture selects only `src/main.ts`, which imports the bare package `external-pkg`.
 That package's symlinked `package.json` selects `index.d.ts`; that declaration re-exports
@@ -151,6 +154,10 @@ Three approaches were investigated:
   every authorized implementation edge with the native import/referrer graph, including sources
   reached through declaration chains; reject unsupported or unrepresentable edges before scans
   and mutations. The host must handle declaration cycles and report provenance of rejected edges.
+
+The experimental implementation of this hybrid is `--compiler-resolution-bridge`. It is not the
+default scan, plan, extract, or apply path. Responsibilities, the versioned protocol, and the
+measured limits are in [the compiler resolution bridge design](compiler-resolution-bridge.md).
 
 This hybrid is a larger architectural change, not a drop-in resolver fix. The native Rust core
 currently scans without requiring Node or the TypeScript package; the published native package

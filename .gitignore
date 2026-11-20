@@ -1,5 +1,7 @@
 # Dependencies and generated output
 node_modules/
+!fixtures/compiler-resolution-bridge/**/node_modules/
+!fixtures/compiler-resolution-bridge/**/node_modules/**
 dist/
 target/
 coverage/

@@ -94,6 +94,7 @@ pub(crate) fn run_scan() -> ExitCode {
             include_generated,
             placement_style,
             explain,
+            compiler_resolution_bridge: has_flag(&arguments, "--compiler-resolution-bridge"),
         },
     ) {
         Ok(result) => match render_scan_result(result, format, verbose, explain) {
@@ -123,6 +124,7 @@ pub(crate) struct ScanCandidateOptions<'a> {
     pub(crate) include_generated: bool,
     pub(crate) placement_style: PlacementStyle,
     pub(crate) explain: bool,
+    pub(crate) compiler_resolution_bridge: bool,
 }
 
 /// Candidates and optional explain diagnostics produced by a scan.
@@ -183,11 +185,17 @@ pub(crate) fn scan_candidates(
             },
         )
     };
+    let resolution = if options.compiler_resolution_bridge {
+        type_tune_core::compiler_bridge::ResolutionMode::CompilerBridge
+    } else {
+        type_tune_core::compiler_bridge::ResolutionMode::Native
+    };
     let (candidates, unsupported_diagnostics, analysis_limitations) = if options.explain {
         let (candidates, diagnostics) =
-            type_tune_core::scan::scan_tsconfig_with_generated_and_diagnostics(
+            type_tune_core::scan::scan_tsconfig_with_generated_and_diagnostics_with_resolution(
                 Path::new(project),
                 options.include_generated,
+                resolution,
             )?;
         let limitations = diagnostics
             .iter()
@@ -200,9 +208,10 @@ pub(crate) fn scan_candidates(
             .collect::<Vec<_>>();
         (candidates, diagnostics, limitations)
     } else {
-        let scan = type_tune_core::scan::scan_tsconfig_project(
+        let scan = type_tune_core::scan::scan_tsconfig_project_with_resolution(
             Path::new(project),
             options.include_generated,
+            resolution,
         )?;
         (scan.candidates, Vec::new(), scan.analysis_limitations)
     };

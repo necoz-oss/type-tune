@@ -363,7 +363,7 @@ fn asset_side_effect_import_does_not_treat_file_as_a_directory() {
 }
 
 #[test]
-#[ignore = "declaration imports are not yet traversed; this demonstrates an unresolved boundary gap"]
+#[ignore = "native resolution still does not traverse declaration imports; the experimental compiler bridge covers this fixture"]
 fn dependency_declaration_cannot_hide_external_source() {
     let temp = Fixture::new();
     let project = temp.path().join("project");
