@@ -996,7 +996,7 @@ fn uses_javascript_specifiers_for_nodenext_package_imports() {
 
 #[test]
 #[cfg(unix)]
-fn scans_projects_with_dangling_orphan_symlinks() {
+fn rejects_selected_dangling_source_symlinks() {
     let root = std::env::temp_dir().join(format!(
         "type-tune-scan-orphan-symlink-{}",
         SystemTime::now()
@@ -1018,12 +1018,11 @@ fn scans_projects_with_dangling_orphan_symlinks() {
     .expect("writes consumer");
     std::os::unix::fs::symlink(root.join("missing.ts"), root.join("src/orphan.ts"))
         .expect("creates dangling symlink");
-    let candidates = scan_tsconfig(&root.join("tsconfig.json")).expect("scans");
+    let error = scan_tsconfig(&root.join("tsconfig.json")).expect_err("rejects dangling source");
     assert!(
-        candidates
-            .iter()
-            .any(|candidate| candidate.symbol_name == "Shared"),
-        "expected Shared candidate: {candidates:?}"
+        error
+            .to_string()
+            .contains("cannot resolve relevant symlink")
     );
     fs::remove_dir_all(root).expect("removes fixture");
 }

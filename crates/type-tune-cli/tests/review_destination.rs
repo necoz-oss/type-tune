@@ -188,6 +188,7 @@ fn rejects_destination_through_outside_symlink() {
     use std::os::unix::fs::symlink;
     let f = Fixture::new();
     let outside = Fixture::new();
+    f.write("tsconfig.json", r#"{"compilerOptions":{"strict":true,"noEmit":true,"baseUrl":".","paths":{"@/*":["src/*"]},"ignoreDeprecations":"6.0"},"include":["src"],"exclude":["src/escape"]}"#);
     fs::create_dir(outside.0.join("empty")).unwrap();
     symlink(outside.0.join("empty"), f.0.join("src/escape")).unwrap();
     f.plan();

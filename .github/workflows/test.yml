@@ -58,6 +58,9 @@ jobs:
           npm ci --ignore-scripts --prefix tests/compiler-versions
           cargo test --test compiler_versions -- --ignored --nocapture
 
+      - name: Test experimental compiler resolution bridge
+        run: cargo test --test compiler_resolution_bridge -- --ignored --nocapture
+
       - name: Verify CLI movement fixture
         run: node scripts/verify-movement-fixture.mjs
 

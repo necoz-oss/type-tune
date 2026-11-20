@@ -25,6 +25,7 @@ pub(crate) struct PlanCandidateOptions<'a> {
     pub(crate) exclusions: &'a [String],
     pub(crate) minimum_referrers: usize,
     pub(crate) ignore_entries: &'a [String],
+    pub(crate) compiler_resolution_bridge: bool,
 }
 
 /// Scans and filters the candidates that can be written to a plan.
@@ -33,9 +34,15 @@ pub(crate) fn scan_plan_candidates(
     options: PlanCandidateOptions<'_>,
 ) -> type_tune_core::Result<Vec<Candidate>> {
     let config = type_tune_core::config::load_project_config(Path::new(project))?;
-    let candidates = type_tune_core::scan::scan_tsconfig_with_generated(
+    let resolution = if options.compiler_resolution_bridge {
+        type_tune_core::compiler_bridge::ResolutionMode::CompilerBridge
+    } else {
+        type_tune_core::compiler_bridge::ResolutionMode::Native
+    };
+    let candidates = type_tune_core::scan::scan_tsconfig_with_generated_with_resolution(
         Path::new(project),
         options.include_generated,
+        resolution,
     )?;
     let (candidates, _) = type_tune_core::scan::filter_candidates_with_diagnostics(
         candidates,
@@ -214,6 +221,7 @@ pub(crate) fn run_plan() -> ExitCode {
             exclusions: &exclusions,
             minimum_referrers: minimum,
             ignore_entries: &ignore_entries,
+            compiler_resolution_bridge: has_flag(&arguments, "--compiler-resolution-bridge"),
         },
     ) {
         Ok(candidates) => candidates,

@@ -66,6 +66,7 @@ mod tests {
                     include_generated: false,
                     placement_style: PlacementStyle::Collocation,
                     explain: true,
+                    compiler_resolution_bridge: false,
                 },
             )
             .expect("scan");
@@ -116,6 +117,7 @@ mod tests {
                     exclusions: &[],
                     minimum_referrers: 2,
                     ignore_entries: &[],
+                    compiler_resolution_bridge: false,
                 },
             )
             .expect("plan candidates");

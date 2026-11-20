@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod compiler;
+pub mod compiler_bridge;
 pub mod config;
 pub mod destination;
 pub mod edit;

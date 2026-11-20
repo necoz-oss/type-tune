@@ -40,11 +40,18 @@ pub(crate) fn read_apply_plan(
 /// Re-scans a plan's project using the eligibility options captured in the plan.
 pub(crate) fn scan_plan_candidates(
     plan: &type_tune_core::plan::PlanFile,
+    compiler_resolution_bridge: bool,
 ) -> type_tune_core::Result<Vec<type_tune_core::model::Candidate>> {
     let config = type_tune_core::config::load_project_config(Path::new(&plan.project_path))?;
-    let candidates = type_tune_core::scan::scan_tsconfig_with_generated(
+    let resolution = if compiler_resolution_bridge {
+        type_tune_core::compiler_bridge::ResolutionMode::CompilerBridge
+    } else {
+        type_tune_core::compiler_bridge::ResolutionMode::Native
+    };
+    let candidates = type_tune_core::scan::scan_tsconfig_with_generated_with_resolution(
         Path::new(&plan.project_path),
         plan.options.include_generated,
+        resolution,
     )?;
     let candidates = type_tune_core::scan::apply_placement_with_aliases(
         candidates,
@@ -119,13 +126,14 @@ pub(crate) fn run_apply() -> ExitCode {
         eprintln!("{error}");
         return ExitCode::FAILURE;
     }
-    let current_candidates = match scan_plan_candidates(&plan) {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let current_candidates =
+        match scan_plan_candidates(&plan, has_flag(&arguments, "--compiler-resolution-bridge")) {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        };
     if let Err(error) =
         type_tune_core::plan::validate_plan_candidate_metadata(&plan, &current_candidates)
     {

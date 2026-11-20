@@ -4,10 +4,11 @@ use std::{collections::BTreeMap, path::Path};
 
 use crate::{
     Result, TypeTuneError,
+    compiler_bridge::{ResolutionMode, reconcile_compiler_graph},
     model::{AnalysisLimitation, Candidate, ImportStrategy, ReferrerStrategy, ScanDiagnostic},
     module_path::PackageAliasScopes,
     parser::parse_source,
-    source::{discover_typescript_files, read_typescript_source_text},
+    source::read_typescript_source_text,
     vue::{self, SourceParse},
 };
 
@@ -17,6 +18,7 @@ mod discovery;
 mod filter;
 mod placement;
 mod referrers;
+mod resolution_boundary;
 use declarations::{scan_parsed_declarations, unsupported_dependency_diagnostics};
 use discovery::{load_tsconfig_source_files, read_project_source_pair};
 pub use filter::{
@@ -28,6 +30,49 @@ pub use placement::{
     apply_placement, apply_placement_with_aliases, override_candidate_destination,
 };
 use referrers::scan_parsed_project_files_with_aliases;
+
+fn load_scan_files(
+    tsconfig_path: &Path,
+    include_generated: bool,
+    resolution: ResolutionMode,
+) -> Result<(Vec<(String, String)>, crate::config::ProjectConfig)> {
+    let discovery_started = std::time::Instant::now();
+    let (mut files, config) = load_tsconfig_source_files(tsconfig_path, include_generated)?;
+    let discovery_ms = discovery_started.elapsed().as_millis();
+    if resolution == ResolutionMode::Native {
+        return Ok((files, config));
+    }
+    let bridge_started = std::time::Instant::now();
+    let reconciliation = reconcile_compiler_graph(tsconfig_path, &config, &files)?;
+    if std::env::var_os("TYPE_TUNE_BRIDGE_PHASES").is_some() {
+        eprintln!(
+            "type-tune-bridge-phase discovery_ms={discovery_ms} bridge_process_ms={} config_ms={} program_ms={} graph_ms={} node_peak_rss={} reconcile_and_bridge_ms={}",
+            reconciliation.timings.process_ms,
+            reconciliation.timings.config_ms,
+            reconciliation.timings.program_ms,
+            reconciliation.timings.graph_ms,
+            reconciliation.timings.node_peak_rss_bytes,
+            bridge_started.elapsed().as_millis()
+        );
+    }
+    for relative in reconciliation.extra_sources {
+        let path = config.project_root.join(&relative);
+        match read_project_source_pair(&config.project_root, &path)? {
+            Some(pair) if !files.iter().any(|(existing, _)| existing == &pair.0) => {
+                files.push(pair);
+            }
+            Some(_) => {}
+            None => {
+                return Err(TypeTuneError::new(format!(
+                    "Compiler resolution found project source {relative}, but Rust could not read it. Refusing incomplete analysis."
+                )));
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok((files, config))
+}
 
 fn destination_index_path(strategies: &[ReferrerStrategy]) -> Option<String> {
     strategies
@@ -61,10 +106,13 @@ pub fn scan_file(path: &Path, source_path: String) -> Result<Vec<Candidate>> {
 ///
 /// Returns an error when source discovery or reading fails.
 pub fn scan_project_root(project_root: &Path) -> Result<Vec<Candidate>> {
-    let files = discover_typescript_files(project_root)
+    let root = std::fs::canonicalize(project_root)
+        .map_err(|error| TypeTuneError::new(format!("Could not resolve project root: {error}")))?;
+    let files = crate::source::discover_scoped_analysis_files(&root, false, None, None, &[])
         .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?
         .into_iter()
-        .filter_map(|path| read_project_source_pair(project_root, &path).transpose())
+        .filter(|path| !crate::source::is_vue_sfc_path(&path.to_string_lossy()))
+        .filter_map(|path| read_project_source_pair(&root, &path).transpose())
         .collect::<Result<Vec<_>>>()?;
     scan_project_files(files)
 }
@@ -87,7 +135,27 @@ pub fn scan_tsconfig_with_generated(
     tsconfig_path: &Path,
     include_generated: bool,
 ) -> Result<Vec<Candidate>> {
-    Ok(scan_tsconfig_project(tsconfig_path, include_generated)?.candidates)
+    scan_tsconfig_with_generated_with_resolution(
+        tsconfig_path,
+        include_generated,
+        ResolutionMode::Native,
+    )
+}
+
+/// Loads a tsconfig with the selected resolution mode.
+///
+/// # Errors
+///
+/// Returns an error when discovery, compiler evidence, or source reading fails.
+pub fn scan_tsconfig_with_generated_with_resolution(
+    tsconfig_path: &Path,
+    include_generated: bool,
+    resolution: ResolutionMode,
+) -> Result<Vec<Candidate>> {
+    Ok(
+        scan_tsconfig_project_with_resolution(tsconfig_path, include_generated, resolution)?
+            .candidates,
+    )
 }
 
 /// Candidates plus Vue files in the selected project that could not be analyzed.
@@ -96,7 +164,22 @@ pub fn scan_tsconfig_with_generated(
 ///
 /// Returns an error when the configuration, discovery, or source reading fails.
 pub fn scan_tsconfig_project(tsconfig_path: &Path, include_generated: bool) -> Result<ProjectScan> {
-    let (files, config) = load_tsconfig_source_files(tsconfig_path, include_generated)?;
+    scan_tsconfig_project_with_resolution(tsconfig_path, include_generated, ResolutionMode::Native)
+}
+
+/// Scans a project with either the native resolver or the experimental compiler bridge.
+///
+/// # Errors
+///
+/// Returns an error when the configuration, discovery, bridge evidence, or source reading fails.
+pub fn scan_tsconfig_project_with_resolution(
+    tsconfig_path: &Path,
+    include_generated: bool,
+    resolution: ResolutionMode,
+) -> Result<ProjectScan> {
+    let (files, config) = load_scan_files(tsconfig_path, include_generated, resolution)?;
+    let project_sources = files.len();
+    let analysis_started = std::time::Instant::now();
     let (candidates, analysis_limitations) = scan_project_files_with_aliases_and_package_aliases(
         files,
         config.base_url.as_deref(),
@@ -107,6 +190,15 @@ pub fn scan_tsconfig_project(tsconfig_path: &Path, include_generated: bool) -> R
         config.preserve_path_aliases,
         node_module_specifier_extension(config.package_node_condition),
     )?;
+    if resolution == ResolutionMode::CompilerBridge
+        && std::env::var_os("TYPE_TUNE_BRIDGE_PHASES").is_some()
+    {
+        eprintln!(
+            "type-tune-bridge-phase analysis_ms={} project_sources={}",
+            analysis_started.elapsed().as_millis(),
+            project_sources
+        );
+    }
     Ok(ProjectScan {
         candidates,
         analysis_limitations,
@@ -134,7 +226,24 @@ pub fn scan_tsconfig_with_generated_and_diagnostics(
     tsconfig_path: &Path,
     include_generated: bool,
 ) -> Result<(Vec<Candidate>, Vec<ScanDiagnostic>)> {
-    let (files, config) = load_tsconfig_source_files(tsconfig_path, include_generated)?;
+    scan_tsconfig_with_generated_and_diagnostics_with_resolution(
+        tsconfig_path,
+        include_generated,
+        ResolutionMode::Native,
+    )
+}
+
+/// Loads explain diagnostics using the selected resolution mode.
+///
+/// # Errors
+///
+/// Returns an error when the configuration, discovery, bridge evidence, or parsing fails.
+pub fn scan_tsconfig_with_generated_and_diagnostics_with_resolution(
+    tsconfig_path: &Path,
+    include_generated: bool,
+    resolution: ResolutionMode,
+) -> Result<(Vec<Candidate>, Vec<ScanDiagnostic>)> {
+    let (files, config) = load_scan_files(tsconfig_path, include_generated, resolution)?;
     let parsed = parse_project_files(&files)?;
     let writable = writable_sources(&parsed.analyzed);
     let mut diagnostics = unsupported_dependency_diagnostics(&writable);

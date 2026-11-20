@@ -72,9 +72,15 @@ pub(crate) fn run_extract() -> ExitCode {
         },
         None => None,
     };
-    let candidates = match type_tune_core::scan::scan_tsconfig_with_generated(
+    let resolution = if has_flag(options, "--compiler-resolution-bridge") {
+        type_tune_core::compiler_bridge::ResolutionMode::CompilerBridge
+    } else {
+        type_tune_core::compiler_bridge::ResolutionMode::Native
+    };
+    let candidates = match type_tune_core::scan::scan_tsconfig_with_generated_with_resolution(
         Path::new(project),
         has_flag(options, "--include-generated"),
+        resolution,
     ) {
         Ok(candidates) => type_tune_core::scan::filter_existing_types(
             type_tune_core::scan::apply_placement_with_aliases(
