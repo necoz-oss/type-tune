@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,9 +48,10 @@ try {
   assert.notEqual(await readFile(source, "utf8"), original);
   const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
   assert.ok(calls.length >= 6);
+  const realRoot = (await realpath(root)).toLowerCase();
   for (const call of calls) {
     assert.equal(call.args[call.args.indexOf("--project") + 1], "tsconfig.json");
-    assert.equal(call.cwd.toLowerCase(), root.toLowerCase());
+    assert.equal((await realpath(call.cwd)).toLowerCase(), realRoot);
   }
   await assert.rejects(readFile(join(root, "tsconfig.tsbuildinfo")));
   await assert.rejects(readFile(join(root, "custom.tsbuildinfo")));
