@@ -7,6 +7,19 @@ on:
       - main
 
 jobs:
+  windows-compiler-validation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci --ignore-scripts --prefix tests/compiler-versions
+      - run: cargo test -p type-tune-core compiler_project_argument
+      - run: cargo build -p type-tune
+      - run: node scripts/windows-compiler-validation.mjs
+
   rust-cli:
     runs-on: ubuntu-latest
 
