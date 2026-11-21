@@ -7,11 +7,25 @@ import { fileURLToPath } from "node:url";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const binary = join(repo, "target", "debug", "type-tune.exe");
+const compiler = resolve(repo, "tests/compiler-versions/node_modules/typescript58/bin/tsc");
 const root = await mkdtemp(join(tmpdir(), "type tune é "));
 const source = join(root, "src/features/catalog/schema.ts");
 const destination = join(root, "src/features/catalog/types/catalog.ts");
-const log = join(root, "compiler-args.jsonl");
-const compiler = resolve(repo, "tests/compiler-versions/node_modules/typescript58/bin/tsc");
+const compilerLog = join(root, "compiler-args.jsonl");
+
+const planArgs = [
+  "plan",
+  "--project", "tsconfig.json",
+  "--out", ".type-tune/plan.json",
+  "--markdown", ".type-tune/plan.md",
+  "--min-referrers", "1",
+  "--default-status", "apply"
+];
+const applyArgs = [
+  "apply",
+  "--plan", ".type-tune/plan.json",
+  "--markdown", ".type-tune/plan.md"
+];
 
 function run(args, success = true) {
   const result = spawnSync(binary, args, { cwd: root, encoding: "utf8" });
@@ -20,39 +34,69 @@ function run(args, success = true) {
   return result;
 }
 
-try {
+async function prepareProject() {
   await cp(join(repo, "fixtures/cli-plan-apply-project"), root, { recursive: true });
-  await writeFile(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, incremental: true, tsBuildInfoFile: "custom.tsbuildinfo" }, include: ["src/**/*.ts"] }));
-  await mkdir(join(root, "node_modules/.bin"), { recursive: true });
+  const config = {
+    compilerOptions: {
+      strict: true,
+      incremental: true,
+      tsBuildInfoFile: "custom.tsbuildinfo"
+    },
+    include: ["src/**/*.ts"]
+  };
+  await writeFile(join(root, "tsconfig.json"), JSON.stringify(config));
+
+  // Record the arguments and working directory before invoking the real compiler.
   const wrapper = join(root, "compiler-wrapper.cjs");
-  await writeFile(wrapper, `require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({cwd: process.cwd(), args: process.argv.slice(2)}) + '\\n');\nrequire(${JSON.stringify(compiler)});\n`);
+  const wrapperSource = [
+    `const fs = require('fs');`,
+    `const call = { cwd: process.cwd(), args: process.argv.slice(2) };`,
+    `fs.appendFileSync(${JSON.stringify(compilerLog)}, JSON.stringify(call) + '\\n');`,
+    `require(${JSON.stringify(compiler)});`,
+    ""
+  ].join("\n");
+  await writeFile(wrapper, wrapperSource);
+  await mkdir(join(root, "node_modules/.bin"), { recursive: true });
   await writeFile(join(root, "node_modules/.bin/tsc.cmd"), `@echo off\r\nnode "${wrapper}" %*\r\n`);
-  const original = await readFile(source, "utf8");
-  const plan = ["plan", "--project", "tsconfig.json", "--out", ".type-tune/plan.json", "--markdown", ".type-tune/plan.md", "--min-referrers", "1", "--default-status", "apply"];
-  const apply = ["apply", "--plan", ".type-tune/plan.json", "--markdown", ".type-tune/plan.md"];
-  run(["scan", "--project", "tsconfig.json", "--min-referrers", "1"]);
-  run(plan);
-  run([...apply, "--dry-run"]);
-  assert.equal(await readFile(source, "utf8"), original);
+}
+
+async function assertRewriteRolledBack(originalSource) {
+  assert.equal(await readFile(source, "utf8"), originalSource);
   await assert.rejects(readFile(destination));
-  // A compiler error in a separate file must reject and roll back the proposed rewrite.
-  const invalid = join(root, "src/invalid.ts");
-  await writeFile(invalid, "const invalid: string = 42;\n");
-  const failure = run(apply, false);
-  assert.match(failure.stderr, /rolled back file changes/);
-  assert.match(failure.stderr, /TS2322/);
-  assert.equal(await readFile(source, "utf8"), original);
-  await assert.rejects(readFile(destination));
-  await rm(invalid);
-  run(apply);
-  assert.notEqual(await readFile(source, "utf8"), original);
-  const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
+}
+
+async function assertCompilerCalls() {
+  const calls = (await readFile(compilerLog, "utf8")).trim().split("\n").map(JSON.parse);
   assert.ok(calls.length >= 6);
+  // Windows can report the working directory using either its short or long name.
   const realRoot = (await realpath(root)).toLowerCase();
   for (const call of calls) {
     assert.equal(call.args[call.args.indexOf("--project") + 1], "tsconfig.json");
     assert.equal((await realpath(call.cwd)).toLowerCase(), realRoot);
   }
+}
+
+try {
+  await prepareProject();
+  const originalSource = await readFile(source, "utf8");
+
+  run(["scan", "--project", "tsconfig.json", "--min-referrers", "1"]);
+  run(planArgs);
+  run([...applyArgs, "--dry-run"]);
+  await assertRewriteRolledBack(originalSource);
+
+  // A compiler error in a separate file must reject and roll back the proposed rewrite.
+  const invalid = join(root, "src/invalid.ts");
+  await writeFile(invalid, "const invalid: string = 42;\n");
+  const failure = run(applyArgs, false);
+  assert.match(failure.stderr, /rolled back file changes/);
+  assert.match(failure.stderr, /TS2322/);
+  await assertRewriteRolledBack(originalSource);
+
+  await rm(invalid);
+  run(applyArgs);
+  assert.notEqual(await readFile(source, "utf8"), originalSource);
+  await assertCompilerCalls();
   await assert.rejects(readFile(join(root, "tsconfig.tsbuildinfo")));
   await assert.rejects(readFile(join(root, "custom.tsbuildinfo")));
 } finally {
