@@ -17,6 +17,15 @@ Native Nuxt solution configs commonly contain references and are therefore rejec
 configs may also include paths outside type-tune's inferred project root; this separate boundary
 limitation remains unresolved. Do not treat a generated child config as a guaranteed workaround.
 
+Phase 1 is split into three steps:
+
+- **1-A: selected-source discovery boundaries** — implementation complete, pending review. Selected
+  project source symlinks are rejected during discovery; see [project boundaries](project-boundaries.md).
+- **1-B: external project source resolution** — address incomplete analysis of project sources
+  reached only through imports.
+- **1-C: explicit workspace authorization** — separate caller-authorized boundaries from config
+  location and the existing inferred root.
+
 The Phase 1 design must define an explicitly authorized workspace boundary, configuration-aware
 source ownership and resolution, deterministic graph discovery, diagnostics, and graph freshness.
 Graph-wide apply additionally needs cross-project referrer coverage and validation of every affected

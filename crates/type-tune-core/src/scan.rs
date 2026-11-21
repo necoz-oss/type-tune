@@ -7,7 +7,7 @@ use crate::{
     model::{AnalysisLimitation, Candidate, ImportStrategy, ReferrerStrategy, ScanDiagnostic},
     module_path::PackageAliasScopes,
     parser::parse_source,
-    source::{discover_typescript_files, read_typescript_source_text},
+    source::read_typescript_source_text,
     vue::{self, SourceParse},
 };
 
@@ -61,10 +61,13 @@ pub fn scan_file(path: &Path, source_path: String) -> Result<Vec<Candidate>> {
 ///
 /// Returns an error when source discovery or reading fails.
 pub fn scan_project_root(project_root: &Path) -> Result<Vec<Candidate>> {
-    let files = discover_typescript_files(project_root)
+    let root = std::fs::canonicalize(project_root)
+        .map_err(|error| TypeTuneError::new(format!("Could not resolve project root: {error}")))?;
+    let files = crate::source::discover_scoped_analysis_files(&root, false, None, None, &[])
         .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?
         .into_iter()
-        .filter_map(|path| read_project_source_pair(project_root, &path).transpose())
+        .filter(|path| !crate::source::is_vue_sfc_path(&path.to_string_lossy()))
+        .filter_map(|path| read_project_source_pair(&root, &path).transpose())
         .collect::<Result<Vec<_>>>()?;
     scan_project_files(files)
 }

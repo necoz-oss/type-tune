@@ -10,8 +10,9 @@ use crate::{
     },
     path::normalize_project_path,
     source::{
-        discover_analysis_files, filter_project_paths, path_is_included,
-        read_typescript_source_text,
+        directory_is_excluded, discover_bounded_package_files, discover_scoped_analysis_files,
+        filter_project_paths, path_is_excluded, path_is_included, read_typescript_source_text,
+        validate_discovery_path, validate_explicit_source_ancestors,
     },
     vue::{self, SourceParse},
 };
@@ -48,14 +49,20 @@ pub(super) fn load_tsconfig_source_files(
 ) -> Result<(Vec<(String, String)>, crate::config::ProjectConfig)> {
     let mut config = load_project_config(tsconfig_path)?;
     let root = config.project_root.clone();
-    let mut discovered = discover_analysis_files(&root, include_generated)
-        .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?;
+    let mut discovered = discover_scoped_analysis_files(
+        &root,
+        include_generated,
+        config.files.as_deref(),
+        config.include.as_deref(),
+        &config.exclude,
+    )
+    .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?;
     let (explicit_packages, package_sources) =
-        discover_explicit_package_sources(&root, config.files.as_deref(), include_generated)?;
+        discover_explicit_package_sources(&root, &config, include_generated)?;
     discovered.extend(package_sources);
     discovered.extend(discover_included_package_sources(
         &root,
-        config.include.as_deref(),
+        &config,
         include_generated,
     )?);
     discovered.sort();
@@ -82,11 +89,25 @@ pub(super) fn load_tsconfig_source_files(
 
 fn discover_included_package_sources(
     root: &Path,
-    includes: Option<&[String]>,
+    config: &crate::config::ProjectConfig,
     include_generated: bool,
 ) -> Result<Vec<std::path::PathBuf>> {
     let mut package_roots = BTreeSet::new();
-    for pattern in includes.into_iter().flatten() {
+    for pattern in config.include.as_deref().into_iter().flatten() {
+        let prefix = pattern.split(['*', '?']).next().unwrap_or("");
+        let literal_prefix = if prefix.len() == pattern.len() || prefix.ends_with('/') {
+            prefix.trim_end_matches('/')
+        } else {
+            prefix
+                .rsplit_once('/')
+                .map_or("", |(directory, _)| directory)
+        };
+        if (!pattern.contains(['*', '?']) && path_is_excluded(pattern, &config.exclude))
+            || (!literal_prefix.is_empty()
+                && directory_is_excluded(literal_prefix, &config.exclude))
+        {
+            continue;
+        }
         let segments: Vec<_> = pattern.split('/').collect();
         let Some(index) = segments
             .iter()
@@ -100,8 +121,10 @@ fn discover_included_package_sources(
         })?;
         collect_matching_directories(
             root,
+            root,
             &segments[..=index],
             include_generated,
+            &config.exclude,
             &mut HashSet::from([canonical]),
             &mut directories,
         )?;
@@ -115,6 +138,8 @@ fn discover_included_package_sources(
                     continue;
                 }
                 let child = package_root.join(name);
+                validate_explicit_source_ancestors(root, &child)
+                    .map_err(|error| TypeTuneError::new(error.to_string()))?;
                 if !child.exists() {
                     continue;
                 }
@@ -131,6 +156,8 @@ fn discover_included_package_sources(
                             continue;
                         }
                         let child = package_root.join(package);
+                        validate_explicit_source_ancestors(root, &child)
+                            .map_err(|error| TypeTuneError::new(error.to_string()))?;
                         if !child.exists() {
                             continue;
                         }
@@ -146,35 +173,53 @@ fn discover_included_package_sources(
     let mut sources = BTreeSet::new();
     for package_root in package_roots {
         sources.extend(
-            discover_analysis_files(&package_root, include_generated).map_err(|error| {
-                TypeTuneError::new(format!("Could not discover sources: {error}"))
-            })?,
+            discover_bounded_package_files(
+                root,
+                &package_root,
+                include_generated,
+                config.files.as_deref(),
+                config.include.as_deref(),
+                &config.exclude,
+            )
+            .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?,
         );
     }
     Ok(sources.into_iter().collect())
 }
 
 fn collect_matching_directories(
+    root: &Path,
     directory: &Path,
     pattern: &[&str],
     include_generated: bool,
+    excludes: &[String],
     ancestors: &mut HashSet<std::path::PathBuf>,
     found: &mut BTreeSet<std::path::PathBuf>,
 ) -> Result<()> {
+    validate_discovery_path(root, directory)
+        .map_err(|error| TypeTuneError::new(error.to_string()))?;
     let Some((part, rest)) = pattern.split_first() else {
         found.insert(directory.to_path_buf());
         return Ok(());
     };
     if *part == "**" {
-        collect_matching_directories(directory, rest, include_generated, ancestors, found)?;
+        collect_matching_directories(
+            root,
+            directory,
+            rest,
+            include_generated,
+            excludes,
+            ancestors,
+            found,
+        )?;
     }
-    let entries = std::fs::read_dir(directory).map_err(|error| {
-        TypeTuneError::new(format!("Could not read {}: {error}", directory.display()))
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| {
+    let mut entries = std::fs::read_dir(directory)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .map_err(|error| {
             TypeTuneError::new(format!("Could not read {}: {error}", directory.display()))
         })?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let wildcard = part.contains(['*', '?']);
@@ -191,9 +236,25 @@ fn collect_matching_directories(
             continue;
         }
         let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .expect("discovery is rooted")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if directory_is_excluded(&relative, excludes) {
+            continue;
+        }
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && std::fs::metadata(&path).is_err()
+        {
+            validate_explicit_source_ancestors(root, &path)
+                .map_err(|error| TypeTuneError::new(error.to_string()))?;
+        }
         if !path.is_dir() {
             continue;
         }
+        validate_discovery_path(root, &path)
+            .map_err(|error| TypeTuneError::new(error.to_string()))?;
         let real = path.canonicalize().map_err(|error| {
             TypeTuneError::new(format!("Could not resolve {}: {error}", path.display()))
         })?;
@@ -201,7 +262,15 @@ fn collect_matching_directories(
             continue;
         }
         let next = if *part == "**" { pattern } else { rest };
-        let result = collect_matching_directories(&path, next, include_generated, ancestors, found);
+        let result = collect_matching_directories(
+            root,
+            &path,
+            next,
+            include_generated,
+            excludes,
+            ancestors,
+            found,
+        );
         ancestors.remove(&real);
         result?;
     }
@@ -210,12 +279,12 @@ fn collect_matching_directories(
 
 fn discover_explicit_package_sources(
     root: &Path,
-    files: Option<&[String]>,
+    config: &crate::config::ProjectConfig,
     include_generated: bool,
 ) -> Result<(Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)> {
     let mut explicit = BTreeSet::new();
     let mut package_roots = BTreeSet::new();
-    for file in files.into_iter().flatten() {
+    for file in config.files.as_deref().into_iter().flatten() {
         let Ok(relative) = normalize_project_path(file) else {
             continue;
         };
@@ -246,9 +315,13 @@ fn discover_explicit_package_sources(
             continue;
         }
         let path = root.join(&relative);
+        validate_explicit_source_ancestors(root, &path)
+            .map_err(|error| TypeTuneError::new(error.to_string()))?;
         if !path.is_file() {
             continue;
         }
+        validate_discovery_path(root, &path)
+            .map_err(|error| TypeTuneError::new(error.to_string()))?;
         explicit.insert(path);
         let package_end = index
             + if segments
@@ -265,8 +338,15 @@ fn discover_explicit_package_sources(
     }
     let mut sources = explicit.clone();
     for package_root in package_roots {
-        let files = discover_analysis_files(&package_root, include_generated)
-            .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?;
+        let files = discover_bounded_package_files(
+            root,
+            &package_root,
+            include_generated,
+            config.files.as_deref(),
+            config.include.as_deref(),
+            &config.exclude,
+        )
+        .map_err(|error| TypeTuneError::new(format!("Could not discover sources: {error}")))?;
         sources.extend(files);
     }
     Ok((

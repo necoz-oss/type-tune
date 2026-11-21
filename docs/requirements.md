@@ -17,6 +17,12 @@ project—without deciding on the developer's behalf that every shared type shou
   references are also rejected. An absent or empty array is accepted. References in an extended
   base configuration are not inherited. See [project reference limitations](design/project-references.md).
 - TypeScript and TSX source files included by that project configuration.
+- Discovery rejects selected source-file and directory symlinks, including internal aliases, before
+  reading their contents or traversing them. This prevents ambiguous logical source identities and
+  symlink escapes from the existing inferred project root. Excluded and unrelated links are skipped;
+  dependency and compiler reads have separate rules. This is not a filesystem sandbox and does not
+  establish coverage of external sources reached only through imports. See
+  [project boundaries](design/project-boundaries.md).
 - Vue single-file components included by that same configuration. Supported blocks are
   `<script lang="ts">`, `<script setup lang="ts">`, `<script lang="tsx">`, and
   `<script setup lang="tsx">`. Referrers in those blocks can receive a specifier-only import
