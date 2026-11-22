@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "type-tune"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "crossterm",
  "serde_json",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "type-tune-core"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "regex",
  "serde",
