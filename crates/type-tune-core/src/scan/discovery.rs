@@ -461,7 +461,28 @@ fn expand_imported_project_files(
         else {
             continue;
         };
-        for specifier in analyzed.parsed.module_specifiers() {
+        let mut side_effect_imports = Vec::new();
+        if analyzed.script_ranges.is_empty() {
+            side_effect_imports.extend(crate::parser::side_effect_import_specifiers(&source)?);
+        } else {
+            for (start, end) in &analyzed.script_ranges {
+                side_effect_imports.extend(crate::parser::side_effect_import_specifiers(
+                    &source[*start..*end],
+                )?);
+            }
+        }
+        for specifier in analyzed
+            .parsed
+            .module_specifiers()
+            .chain(side_effect_imports.iter().map(String::as_str))
+        {
+            super::resolution_boundary::check_source(
+                root,
+                &source_path,
+                specifier,
+                &known_paths,
+                config,
+            )?;
             let resolved = resolve_relative_module_with_options(
                 source_path.as_str(),
                 specifier,

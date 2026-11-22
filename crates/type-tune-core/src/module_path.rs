@@ -157,6 +157,69 @@ fn module_candidates(base: &str) -> Vec<String> {
     candidates
 }
 
+pub(crate) fn filesystem_module_candidates(base: &str, suffixes: &[String]) -> Vec<String> {
+    let candidates = module_candidates(base);
+    if suffixes.is_empty() {
+        candidates
+    } else {
+        candidates
+            .into_iter()
+            .flat_map(|candidate| {
+                suffixes
+                    .iter()
+                    .map(move |suffix| apply_module_suffix(&candidate, suffix))
+            })
+            .collect()
+    }
+}
+
+pub(crate) fn filesystem_alias_bases(
+    referrer: &str,
+    specifier: &str,
+    base_url: Option<&str>,
+    paths: &BTreeMap<String, Vec<String>>,
+    package_aliases: &PackageAliasScopes,
+) -> Vec<String> {
+    if is_relative_module_specifier(specifier) {
+        return Vec::new();
+    }
+    let bases_for = |paths: &BTreeMap<String, Vec<String>>| {
+        let normalized = normalize_path_aliases(base_url, paths);
+        normalized
+            .iter()
+            .filter_map(|(alias, targets)| {
+                match_target_pattern(specifier, alias)
+                    .map(|star| (alias.find('*').unwrap_or(usize::MAX), star, targets))
+            })
+            .max_by_key(|(length, _, _)| *length)
+            .map(|(_, star, targets)| {
+                targets
+                    .iter()
+                    .map(|target| apply_alias_pattern(target, star))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let mut result = bases_for(paths);
+    if let Some(base) = base_url {
+        result.push(format!("{}/{}", base.trim_end_matches('/'), specifier));
+    }
+    if let Some((_, scoped)) = package_aliases
+        .iter()
+        .filter(|(scope, _)| {
+            *scope == "."
+                || referrer == scope.as_str()
+                || referrer
+                    .strip_prefix(scope.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        })
+        .max_by_key(|(scope, _)| scope.len())
+    {
+        result.extend(bases_for(scoped));
+    }
+    result
+}
+
 fn module_file_candidates(base: &str) -> Vec<String> {
     let jsx_candidates = base.strip_suffix(".jsx").map(|stem| {
         vec![

@@ -23,6 +23,10 @@ project—without deciding on the developer's behalf that every shared type shou
   dependency and compiler reads have separate rules. This is not a filesystem sandbox and does not
   establish coverage of external sources reached only through imports. See
   [project boundaries](design/project-boundaries.md).
+- `--compiler-resolution-bridge` is an experimental opt-in. It asks the project-local TypeScript
+  package for resolution evidence and refuses incomplete, unauthorized, or unsupported results
+  instead of falling back to native resolution. Ordinary scans do not require Node.js or
+  TypeScript, and they still do not prove that declaration chains are complete.
 - Vue single-file components included by that same configuration. Supported blocks are
   `<script lang="ts">`, `<script setup lang="ts">`, `<script lang="tsx">`, and
   `<script setup lang="tsx">`. Referrers in those blocks can receive a specifier-only import

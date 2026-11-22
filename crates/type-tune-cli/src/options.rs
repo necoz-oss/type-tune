@@ -75,6 +75,7 @@ pub(crate) const SCAN_OPTIONS: CommandOptions = CommandOptions {
     flag_options: &[
         "--include-existing-types",
         "--include-generated",
+        "--compiler-resolution-bridge",
         "--verbose",
         "--explain",
     ],
@@ -108,6 +109,7 @@ pub(crate) const PLAN_OPTIONS: CommandOptions = CommandOptions {
     flag_options: &[
         "--include-existing-types",
         "--include-generated",
+        "--compiler-resolution-bridge",
         "--ai-review",
         "--ai-dry-run",
     ],
@@ -122,13 +124,21 @@ pub(crate) const REVIEW_OPTIONS: CommandOptions = CommandOptions {
 /// Options accepted by `apply`.
 pub(crate) const APPLY_OPTIONS: CommandOptions = CommandOptions {
     value_options: &["--plan", "--markdown"],
-    flag_options: &["--accept-unreviewed", "--dry-run"],
+    flag_options: &[
+        "--accept-unreviewed",
+        "--dry-run",
+        "--compiler-resolution-bridge",
+    ],
 };
 
 /// Options accepted by `extract`.
 pub(crate) const EXTRACT_OPTIONS: CommandOptions = CommandOptions {
     value_options: &["--from", "--to", "--project", "--placement-style"],
-    flag_options: &["--dry-run", "--include-generated"],
+    flag_options: &[
+        "--dry-run",
+        "--include-generated",
+        "--compiler-resolution-bridge",
+    ],
 };
 
 /// Parses the supported declaration destination placement styles.
