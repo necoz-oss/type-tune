@@ -104,12 +104,8 @@ fn is_unsupported_declaration_merge_pair(
 ) -> bool {
     let left_kind = left.kind.as_str();
     let right_kind = right.kind.as_str();
-    if (left_kind == "typeAlias" && right_kind == "interface")
-        || (left_kind == "interface" && right_kind == "typeAlias")
-    {
-        return false;
-    }
-    true
+    !((left_kind == "typeAlias" && right_kind == "interface")
+        || (left_kind == "interface" && right_kind == "typeAlias"))
 }
 
 fn is_allowed_ambiguous_same_file_export(matches: &[&ParsedDeclaration]) -> bool {
