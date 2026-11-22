@@ -126,14 +126,15 @@ fn run_compiler(
     project_root: &Path,
     project_path: &Path,
 ) -> std::result::Result<(), CompilerFailure> {
+    let project_argument = compiler_project_argument(project_root, project_path);
     let temp = tempfile::Builder::new()
         .prefix("type-tune-compiler-")
         .tempdir()
         .map_err(|error| CompilerFailure::Cleanup {
             message: format!("Could not create temporary compiler validation directory: {error}"),
         })?;
-    let result = inspect_build_info(&compiler, project_root, project_path, temp.path()).and_then(
-        |needs_build_info| {
+    let result = inspect_build_info(&compiler, project_root, project_argument, temp.path())
+        .and_then(|needs_build_info| {
             let mut command = Command::new(&compiler);
             command
                 .current_dir(project_root)
@@ -141,15 +142,14 @@ fn run_compiler(
                 .env("TMP", temp.path())
                 .env("TEMP", temp.path())
                 .args(["--noEmit", "--project"])
-                .arg(project_path);
+                .arg(project_argument);
             if needs_build_info {
                 command
                     .arg("--tsBuildInfoFile")
                     .arg(temp.path().join("validation.tsbuildinfo"));
             }
             compiler_output(command, &compiler)
-        },
-    );
+        });
     if let Err(error) = temp.close() {
         let prior = match result {
             Ok(()) => String::new(),
@@ -166,6 +166,19 @@ fn run_compiler(
         });
     }
     result
+}
+
+// Canonical Windows paths use verbatim prefixes that TypeScript may normalize into
+// unusable //?/ paths. The compiler already runs at project_root, so a contained
+// project can be passed relative to that directory without changing its identity.
+fn compiler_project_argument<'a>(project_root: &Path, project_path: &'a Path) -> &'a Path {
+    if project_path.is_absolute()
+        && let Ok(relative) = project_path.strip_prefix(project_root)
+        && !relative.as_os_str().is_empty()
+    {
+        return relative;
+    }
+    project_path
 }
 
 // Ask the actual compiler to resolve inheritance, including package-based extends. If the
@@ -290,6 +303,73 @@ mod tests {
     };
 
     use super::{resolve_typescript_compiler, tsc_binary_name};
+
+    #[test]
+    fn compiler_project_argument_preserves_relative_and_unrelated_paths() {
+        use std::path::Path;
+        let root = Path::new("project");
+        assert_eq!(
+            super::compiler_project_argument(root, Path::new("configs/é space.json")),
+            Path::new("configs/é space.json")
+        );
+        assert_eq!(
+            super::compiler_project_argument(root, Path::new("other")),
+            Path::new("other")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn compiler_project_argument_handles_windows_prefixes() {
+        use std::path::Path;
+        for (root, project, expected) in [
+            (
+                r"C:\Users\example\project",
+                r"C:\Users\example\project\tsconfig.json",
+                r"tsconfig.json",
+            ),
+            (
+                r"\\?\C:\Users\example\project",
+                r"\\?\C:\Users\example\project\tsconfig.json",
+                r"tsconfig.json",
+            ),
+            (
+                r"\\server\share\project",
+                r"\\server\share\project\space é\tsconfig.json",
+                r"space é\tsconfig.json",
+            ),
+            (
+                r"\\?\UNC\server\share\project",
+                r"\\?\UNC\server\share\project\tsconfig.json",
+                r"tsconfig.json",
+            ),
+        ] {
+            assert_eq!(
+                super::compiler_project_argument(Path::new(root), Path::new(project)),
+                Path::new(expected)
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_receives_relative_project_for_inspection_and_validation() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let compiler = root.path().join("compiler");
+        fs::write(&compiler, "#!/bin/sh\nprintf '%s\\n' \"$@\" >> args\nif [ \"$1\" = --showConfig ]; then echo '{\"compilerOptions\":{}}'; fi\n").unwrap();
+        fs::set_permissions(&compiler, fs::Permissions::from_mode(0o755)).unwrap();
+        super::run_compiler(
+            compiler,
+            root.path(),
+            &root.path().join("space é/tsconfig.json"),
+        )
+        .unwrap_or_else(|_| panic!("compiler failed"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("args")).unwrap(),
+            "--showConfig\n--project\nspace é/tsconfig.json\n--noEmit\n--project\nspace é/tsconfig.json\n"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

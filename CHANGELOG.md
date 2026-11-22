@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Avoid passing canonical Windows extended-length project paths to TypeScript during apply validation, addressing the TS5058 regression reported in [#36](https://github.com/necoz-oss/type-tune/issues/36).
+
 ## [v1.0.0] - 2026-11-08
 
 ### Added
