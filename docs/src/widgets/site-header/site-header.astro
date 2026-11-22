@@ -39,9 +39,9 @@ const links = [
   <button class="home-header__toggle" type="button" aria-label="Open navigation"
     aria-haspopup="dialog" aria-controls="home-menu" aria-expanded="false" data-home-menu-toggle>
     <img class="home-header__toggle-icon home-header__toggle-icon--open"
-      src="/parts/type-tune-smartphone-hamburger-menu.png" width="15" height="14" alt="" />
+      src="/parts/type-tune-smartphone-hamburger-menu.png" width="20" height="20" alt="" />
     <img class="home-header__toggle-icon home-header__toggle-icon--close"
-      src="/parts/type-tune-smartphone-hamburger-menu-close.png" width="14" height="18" alt="" />
+      src="/parts/type-tune-smartphone-hamburger-menu-close.png" width="20" height="20" alt="" />
   </button>
 </header>
 
@@ -264,7 +264,7 @@ const links = [
       background: var(--background);
     }
     .home-header__logo {
-      width: calc(66px + 0.5rem);
+      width: 7rem;
     }
     .home-header__nav {
       display: none;
@@ -272,8 +272,9 @@ const links = [
     .home-header__toggle {
       display: grid;
       place-items: center;
-      width: 44px;
-      height: 44px;
+      margin-top: 0.5rem;
+      width: 3rem;
+      height: 3rem;
       padding: 0;
       border: 0;
       background: transparent;
@@ -285,8 +286,6 @@ const links = [
     }
     :global(body.home-menu-open) .home-header__toggle-icon--close {
       display: block;
-      width: 14px;
-      height: auto;
     }
     .home-menu__board {
       width: min(68vw, 28rem);
