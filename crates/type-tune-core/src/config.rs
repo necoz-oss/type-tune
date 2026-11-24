@@ -799,6 +799,51 @@ mod tests {
     }
 
     #[test]
+    fn resolves_package_exports_for_extends() {
+        let root = tempfile::tempdir().expect("creates project");
+        let package = root.path().join("node_modules/@scope/config");
+        fs::create_dir_all(package.join("configs")).expect("creates package");
+        fs::write(
+            package.join("configs/base.json"),
+            r#"{"include":["base/**/*.ts"]}"#,
+        )
+        .expect("writes base");
+        fs::write(
+            package.join("tsconfig.json"),
+            r#"{"include":["wrong/**/*.ts"]}"#,
+        )
+        .expect("writes competing file");
+        fs::write(package.join("package.json"), r#"{"exports":{".":"./configs/base.json","./tsconfig":{"import":"./missing.json","require":"./configs/base.json"},"./configs/*":"./configs/*.json"}}"#).expect("writes metadata");
+        let config_path = root.path().join("tsconfig.json");
+        for extends in [
+            "@scope/config",
+            "@scope/config/tsconfig",
+            "@scope/config/configs/base",
+        ] {
+            fs::write(
+                &config_path,
+                serde_json::json!({"extends": extends}).to_string(),
+            )
+            .expect("writes config");
+            let config = load_project_config(&config_path).expect("loads exported config");
+            assert_eq!(
+                config.include,
+                Some(vec![
+                    "node_modules/@scope/config/configs/base/**/*.ts".into()
+                ]),
+                "{extends}"
+            );
+            assert_eq!(config.project_root, root.path());
+        }
+        fs::write(&config_path, r#"{"extends":"@scope/config/tsconfig.json"}"#)
+            .expect("writes config");
+        assert!(
+            load_project_config(&config_path).is_err(),
+            "exports must block unexported files"
+        );
+    }
+
+    #[test]
     fn resolves_dotted_package_extends_subpaths() {
         let root = tempfile::tempdir().expect("creates project");
         let package = root.path().join("node_modules/config-pkg");

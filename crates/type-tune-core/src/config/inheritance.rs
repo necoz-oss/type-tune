@@ -118,7 +118,10 @@ pub(super) fn load_extending_config(
         });
     }
     seen.remove(&canonical_path);
-    Ok(parent.map_or(current.clone(), |parent| merge_configs(parent, current)))
+    Ok(match parent {
+        Some(parent) => merge_configs(parent, current),
+        None => current,
+    })
 }
 
 fn resolve_extends_path(directory: &Path, extends_path: &str) -> Result<(PathBuf, bool)> {
@@ -148,7 +151,17 @@ fn resolve_config_file_path(mut path: PathBuf) -> Result<PathBuf> {
 fn resolve_package_extends_path(directory: &Path, extends_path: &str) -> Result<PathBuf> {
     let mut current = Some(directory);
     while let Some(search_directory) = current {
-        let package_path = search_directory.join("node_modules").join(extends_path);
+        let node_modules = search_directory.join("node_modules");
+        let (package_name, subpath) = split_package_specifier(extends_path);
+        let package_root = node_modules.join(package_name);
+        if let Some(exports) = package_exports(&package_root)? {
+            if let Some(path) = resolve_export(&package_root, &exports, subpath) {
+                return Ok(path);
+            }
+            current = search_directory.parent();
+            continue;
+        }
+        let package_path = node_modules.join(extends_path);
         if package_path.is_file() {
             return Ok(package_path);
         }
@@ -178,6 +191,131 @@ fn resolve_package_extends_path(directory: &Path, extends_path: &str) -> Result<
         "Could not resolve package tsconfig extends path {extends_path:?} from {}.",
         directory.display()
     )))
+}
+
+fn split_package_specifier(specifier: &str) -> (&str, &str) {
+    let start = usize::from(specifier.starts_with('@'));
+    let split = specifier[start..].find('/').map(|index| start + index);
+    let split = if start == 1 {
+        split.and_then(|index| {
+            specifier[index + 1..]
+                .find('/')
+                .map(|next| index + 1 + next)
+        })
+    } else {
+        split
+    };
+    split.map_or((specifier, ""), |index| {
+        (&specifier[..index], &specifier[index + 1..])
+    })
+}
+
+fn package_exports(package_path: &Path) -> Result<Option<serde_json::Value>> {
+    let package_json = package_path.join("package.json");
+    if !package_json.is_file() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&package_json).map_err(|error| {
+        TypeTuneError::new(format!(
+            "Could not read {}: {error}",
+            package_json.display()
+        ))
+    })?;
+    let package: serde_json::Value = serde_json::from_str(
+        content.strip_prefix('\u{feff}').unwrap_or(&content),
+    )
+    .map_err(|error| {
+        TypeTuneError::new(format!(
+            "Could not parse {}: {error}",
+            package_json.display()
+        ))
+    })?;
+    Ok(package
+        .get("exports")
+        .filter(|value| !value.is_null())
+        .cloned())
+}
+
+fn resolve_export(
+    package_root: &Path,
+    exports: &serde_json::Value,
+    subpath: &str,
+) -> Option<PathBuf> {
+    let key = if subpath.is_empty() {
+        ".".to_owned()
+    } else {
+        format!("./{subpath}")
+    };
+    let mut wildcard = None;
+    let target = if let Some(map) = exports
+        .as_object()
+        .filter(|map| map.keys().any(|key| key.starts_with('.')))
+    {
+        if let Some(target) = map.get(&key) {
+            target
+        } else {
+            map.iter()
+                .filter_map(|(pattern, target)| {
+                    let (prefix, suffix) = pattern.split_once('*')?;
+                    if suffix.contains('*')
+                        || !key.starts_with(prefix)
+                        || !key.ends_with(suffix)
+                        || key.len() < prefix.len() + suffix.len()
+                    {
+                        return None;
+                    }
+                    Some((pattern, target, prefix.len(), suffix.len()))
+                })
+                .max_by_key(|(_, _, prefix, suffix)| (*prefix, *suffix))
+                .map(|(_, target, prefix, suffix)| {
+                    wildcard = Some(&key[prefix..key.len() - suffix]);
+                    target
+                })?
+        }
+    } else if subpath.is_empty() {
+        exports
+    } else {
+        return None;
+    };
+    resolve_export_target(package_root, target, wildcard)
+}
+
+fn resolve_export_target(
+    package_root: &Path,
+    target: &serde_json::Value,
+    wildcard: Option<&str>,
+) -> Option<PathBuf> {
+    match target {
+        serde_json::Value::String(target) => {
+            let target = target.replace('*', wildcard.unwrap_or("*"));
+            let relative = target.strip_prefix("./")?;
+            if relative
+                .split('/')
+                .any(|part| matches!(part, ".." | "." | "node_modules"))
+            {
+                return None;
+            }
+            let mut path = package_root.join(relative);
+            match path.extension().and_then(|extension| extension.to_str()) {
+                Some("json") => {}
+                Some("js") => {
+                    path.set_extension("json");
+                }
+                _ => return None,
+            }
+            path.is_file().then_some(path)
+        }
+        serde_json::Value::Array(targets) => targets
+            .iter()
+            .find_map(|target| resolve_export_target(package_root, target, wildcard)),
+        serde_json::Value::Object(conditions) => conditions
+            .iter()
+            .filter(|(condition, _)| {
+                matches!(condition.as_str(), "types" | "node" | "require" | "default")
+            })
+            .find_map(|(_, target)| resolve_export_target(package_root, target, wildcard)),
+        _ => None,
+    }
 }
 
 fn package_tsconfig_path(package_path: &Path) -> Result<Option<PathBuf>> {
