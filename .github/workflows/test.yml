@@ -17,6 +17,7 @@ jobs:
           node-version: "24"
       - run: npm ci --ignore-scripts --prefix tests/compiler-versions
       - run: cargo test -p type-tune-core compiler_project_argument
+      - run: cargo test -p type-tune-core export_tests
       - run: cargo build -p type-tune
       - run: node scripts/windows-compiler-validation.mjs
 
