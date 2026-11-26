@@ -32,6 +32,16 @@ project—without deciding on the developer's behalf that every shared type shou
 - Existing relative module specifiers, configured path aliases, and simple barrel exports when their
   relationships can be resolved safely.
 
+Package-based `extends` supports package exports with exact and wildcard subpaths, and the
+`types`, `node`, `require`, and `default` conditions in declaration order. A package with an
+exports field blocks an unexported, null, invalid, or missing target instead of searching for a
+same-named ancestor package. TypeScript can choose an ancestor in that situation; type-tune fails
+closed to avoid analyzing the wrong configuration. TypeScript 4.9 uses legacy package lookup rather
+than these exports mappings. A null entry in an export array also fails closed, although TypeScript
+5.5 and 5.8 can continue to a later target. Versioned `types@...` conditions and percent-encoded or backslash
+export targets are rejected. Export targets must resolve inside their package after symlink
+resolution. Packages without exports retain legacy lookup behavior.
+
 The project-local TypeScript compiler is used for final validation. A project should therefore have
 TypeScript available in its dependencies before an apply operation. Moves that change a `.vue`
 file also require `vue-tsc`, because `tsc` does not typecheck single-file components.
