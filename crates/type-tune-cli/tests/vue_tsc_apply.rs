@@ -88,6 +88,9 @@ fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
         "import type { User } from './model';\nexport type Two = User;\n",
     );
     fixture.write("src/Card.vue", CARD);
+    let plain =
+        "<template><p>Plain</p></template>\n<script>export default { name: 'Plain' }</script>\n";
+    fixture.write("src/Plain.vue", plain);
     link_repository_modules(&repo, &fixture.root);
 
     let initial = run_vue_tsc(&fixture.root);
@@ -124,6 +127,10 @@ fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
     assert!(dry_run.status.success(), "{}", output_text(&dry_run));
     let after = project_snapshot(&fixture.root);
     assert_eq!(after, before);
+    assert_eq!(
+        fs::read(fixture.root.join("src/Plain.vue")).unwrap(),
+        plain.as_bytes()
+    );
     assert_no_transaction_artifacts(&after);
     assert!(!after.directories.iter().any(|path| path == "src/domain"));
 
@@ -132,6 +139,10 @@ fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
     let updated = fs::read(fixture.root.join("src/Card.vue")).unwrap();
     let expected = replace_once(&before_vue, b"\"./model\"", b"\"./domain/user\"");
     assert_eq!(updated, expected);
+    assert_eq!(
+        fs::read(fixture.root.join("src/Plain.vue")).unwrap(),
+        plain.as_bytes()
+    );
     assert!(fixture.root.join("src/domain/user.ts").is_file());
 
     let checked = run_vue_tsc(&fixture.root);

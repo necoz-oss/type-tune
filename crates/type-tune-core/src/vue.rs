@@ -7,7 +7,7 @@
 use crate::{
     Result,
     model::{ANALYSIS_LIMITATION_UNRESOLVED_VUE, AnalysisLimitation},
-    parser::{ParsedSource, TypeScriptDialect, parse_exact_dialect},
+    parser::{ParsedSource, TypeScriptDialect, is_inert_vue_javascript, parse_exact_dialect},
     source_role::{SourceRole, source_role},
 };
 
@@ -49,6 +49,16 @@ pub(crate) fn parse_analysis_source(path: &str, source: &str) -> Result<SourcePa
     }
     Ok(match extract_vue_typescript(path, source) {
         VueExtract::NoTypeScript => SourceParse::NoTypeScript,
+        VueExtract::JavaScript(start, end) => {
+            if is_inert_vue_javascript(&source[start..end])? {
+                SourceParse::NoTypeScript
+            } else {
+                SourceParse::Unsupported(limitation(
+                    path,
+                    "it has a JavaScript <script> block whose dependencies cannot be established safely; only a static default export with an optional literal name is supported",
+                ))
+            }
+        }
         VueExtract::Unsupported(limitation) => SourceParse::Unsupported(limitation),
         VueExtract::TypeScript {
             embedded,
@@ -71,6 +81,7 @@ pub(crate) fn parse_analysis_source(path: &str, source: &str) -> Result<SourcePa
 
 enum VueExtract {
     NoTypeScript,
+    JavaScript(usize, usize),
     Unsupported(AnalysisLimitation),
     TypeScript {
         embedded: String,
@@ -101,6 +112,7 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
     let bytes = source.as_bytes();
     let mut index = if source.starts_with('\u{feff}') { 3 } else { 0 };
     let mut scripts = Vec::new();
+    let mut javascript = None;
     let mut saw_template = false;
     let mut saw_script = false;
     let mut saw_script_setup = false;
@@ -147,6 +159,13 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
             {
                 return VueExtract::Unsupported(unsupported);
             }
+            if tag.name == "script" && supported_script(&tag, tag.open_end, tag.open_end).is_none()
+            {
+                return VueExtract::Unsupported(limitation(
+                    path,
+                    "it has a self-closing <script> block",
+                ));
+            }
             if tag.name == "template" {
                 if saw_template {
                     return VueExtract::Unsupported(limitation(
@@ -185,9 +204,20 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
             }
             if let Some(block) = supported_script(&tag, tag.open_end, content_end) {
                 scripts.push(block);
+            } else {
+                javascript = Some((tag.open_end, content_end));
             }
         }
         index = after;
+    }
+    if let Some((start, end)) = javascript {
+        if !scripts.is_empty() || saw_script_setup {
+            return VueExtract::Unsupported(limitation(
+                path,
+                "it mixes JavaScript and TypeScript script blocks, which cannot be analyzed safely",
+            ));
+        }
+        return VueExtract::JavaScript(start, end);
     }
     if scripts.is_empty() {
         return VueExtract::NoTypeScript;
@@ -265,6 +295,15 @@ fn script_limitation(path: &str, tag: &StartTag) -> Option<AnalysisLimitation> {
         .iter()
         .find_map(|(name, value)| (name == "lang").then_some(value.as_deref()).flatten());
     if matches!(lang, Some("ts" | "tsx")) {
+        return None;
+    }
+    if matches!(lang, None | Some("js"))
+        && !tag
+            .attributes
+            .iter()
+            .any(|(name, value)| name == "lang" && value.is_none())
+        && !tag.attributes.iter().any(|(name, _)| name == "setup")
+    {
         return None;
     }
     let detail = match lang {
@@ -625,6 +664,66 @@ const title = "User";
                 matches!(parsed, SourceParse::Unsupported(_)),
                 "{}",
                 unsupported_message(parsed)
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_only_static_javascript_component_names() {
+        for script in [
+            "export default {}",
+            "export default { name: 'Plain' };",
+            "export default { name: \"日本語\", };",
+        ] {
+            let source = format!("<template><p>Plain</p></template><script>{script}</script>");
+            assert!(
+                matches!(
+                    parse_analysis_source("Plain.vue", &source).unwrap(),
+                    SourceParse::NoTypeScript
+                ),
+                "{script}"
+            );
+        }
+        for script in [
+            "import { User } from '@/model'; export default {}",
+            "export { User } from './barrel';",
+            "/** @typedef {import('./model').User} User */ export default {}",
+            "export default /** @type {import('./model').User} */ ({})",
+            "export default { name: require('./model') }",
+            "export default { name: import('./model') }",
+            "export default { name: `Plain` }",
+            "export default { name: '\\xZZ' }",
+            "export default { name: 'Pl\\u0061in' }",
+            "export default { name: value }",
+            "export default { ...options }",
+            "export default { ['name']: 'Plain' }",
+            "export default { name: 'Plain', props: {} }",
+            "export default { /* @typedef {import('./x').X} X */ name: 'Plain' }",
+            "export default { name /* @type {import('./x').X} */: 'Plain' }",
+            "export default { name: 'Plain' }; /* @typedef {import('./x').X} X */",
+            "export default { name: 'Plain'",
+        ] {
+            let source = format!("<script lang=\"js\">{script}</script>");
+            assert!(
+                matches!(
+                    parse_analysis_source("Plain.vue", &source).unwrap(),
+                    SourceParse::Unsupported(_)
+                ),
+                "{script}"
+            );
+        }
+        for source in [
+            "<script setup>export default {}</script>",
+            "<script lang>export default {}</script>",
+            "<script>export default {}</script><script setup lang=\"ts\">const x = 1</script>",
+            "<script src=\"./plain.js\"></script>",
+        ] {
+            assert!(
+                matches!(
+                    parse_analysis_source("Plain.vue", source).unwrap(),
+                    SourceParse::Unsupported(_)
+                ),
+                "{source}"
             );
         }
     }

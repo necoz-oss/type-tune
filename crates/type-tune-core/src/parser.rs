@@ -235,6 +235,53 @@ pub(crate) fn parse_exact_dialect(
     Ok(Some(parsed_source_from_tree(&tree, source)))
 }
 
+/// Recognize only a static Vue options export with no possible module or JSDoc references.
+pub(crate) fn is_inert_vue_javascript(source: &str) -> Result<bool> {
+    let tree = parse_tree_with_dialect(source, TypeScriptDialect::TypeScript)?;
+    let root = tree.root_node();
+    if root.has_error() || root.named_child_count() != 1 {
+        return Ok(false);
+    }
+    let Some(export) = root.named_child(0) else {
+        return Ok(false);
+    };
+    if export.kind() != "export_statement"
+        || export.named_child_count() != 1
+        || !export
+            .children(&mut export.walk())
+            .any(|node| node.kind() == "default")
+    {
+        return Ok(false);
+    }
+    let Some(object) = export.named_child(0).filter(|node| node.kind() == "object") else {
+        return Ok(false);
+    };
+    if object.named_child_count() == 0 {
+        return Ok(true);
+    }
+    if object.named_child_count() != 1 {
+        return Ok(false);
+    }
+    let Some(pair) = object.named_child(0).filter(|node| node.kind() == "pair") else {
+        return Ok(false);
+    };
+    if pair.named_child_count() != 2 {
+        return Ok(false);
+    }
+    let Some(key) = pair.child_by_field_name("key") else {
+        return Ok(false);
+    };
+    let Some(value) = pair.child_by_field_name("value") else {
+        return Ok(false);
+    };
+    Ok(key.kind() == "property_identifier"
+        && key.utf8_text(source.as_bytes()).ok() == Some("name")
+        && value.kind() == "string"
+        && value
+            .utf8_text(source.as_bytes())
+            .is_ok_and(|text| !text.contains('\\') && !text.chars().any(char::is_control)))
+}
+
 fn parsed_source_from_tree(tree: &tree_sitter::Tree, source: &str) -> ParsedSource {
     let mut declarations = Vec::new();
     collect_declarations(

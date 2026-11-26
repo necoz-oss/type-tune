@@ -28,6 +28,12 @@ project—without deciding on the developer's behalf that every shared type shou
   `<script setup lang="tsx">`. Referrers in those blocks can receive a specifier-only import
   update. Templates, styles, and other SFC content are not analyzed as TypeScript and are not
   rewritten.
+- A plain JavaScript Vue script does not block analysis only when it is exactly a static default
+  export of an empty object or an object containing only a `name` property with an unescaped string.
+  The parser rejects comments, imports, expressions, other options, and mixed-language scripts in this
+  exception. This syntax cannot refer to a project type through a module, JSDoc, or an expression;
+  all other JavaScript scripts remain unresolved and block moves project-wide. Supported TypeScript
+  scripts in other components continue to contribute referrers and rewrite blockers.
 - Exported `type` aliases and `interface` declarations.
 - Existing relative module specifiers, configured path aliases, and simple barrel exports when their
   relationships can be resolved safely.

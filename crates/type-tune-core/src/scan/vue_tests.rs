@@ -41,6 +41,65 @@ fn referrers_for(root: &Path, symbol: &str) -> (Vec<String>, Vec<String>, usize)
 }
 
 #[test]
+fn static_javascript_does_not_hide_alias_or_barrel_vue_dependencies() {
+    let root = write_project(&[
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}},"include":["src"]}"#,
+        ),
+        ("src/types.ts", user_type()),
+        ("src/barrel.ts", "export type { User } from './types';\n"),
+        (
+            "src/Alias.vue",
+            "<script setup lang=\"ts\">import type { Other } from '@/types'; defineProps<{ item: Other }>();</script>",
+        ),
+        (
+            "src/Barrel.vue",
+            "<script setup lang=\"ts\">import type { User } from '@/barrel'; defineProps<{ item: User }>();</script>",
+        ),
+        (
+            "src/Plain.vue",
+            "<script>export default { name: 'Plain' }</script>",
+        ),
+    ]);
+    let scan = scan_tsconfig_project(&root.path().join("tsconfig.json"), false).unwrap();
+    assert!(scan.analysis_limitations.is_empty());
+    let user = scan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "User")
+        .unwrap();
+    let other = scan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.symbol_name == "Other")
+        .unwrap();
+    assert_eq!(user.readonly_referrers[0].path, "src/Barrel.vue");
+    assert!(!user.vue_rewrite_blockers.is_empty());
+    assert_eq!(other.readonly_referrers[0].path, "src/Alias.vue");
+    assert!(other.vue_rewrite_blockers.is_empty());
+
+    fs::write(root.path().join("src/Plain.vue"), "<script>/** @typedef {import('@/barrel').User} User */ export default { name: 'Plain' }</script>").unwrap();
+    let blocked = scan_tsconfig_project(&root.path().join("tsconfig.json"), false).unwrap();
+    assert_eq!(blocked.analysis_limitations.len(), 1);
+    assert_eq!(blocked.analysis_limitations[0].path, "src/Plain.vue");
+    for candidate in blocked
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.symbol_name == "User" || candidate.symbol_name == "Other")
+    {
+        assert_eq!(candidate.analysis_limitations, blocked.analysis_limitations);
+        assert!(
+            plan_extraction_rewrite(
+                std::slice::from_ref(candidate),
+                &std::collections::BTreeMap::new()
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn counts_script_setup_define_props_and_define_emits_once_per_file() {
     let root = write_project(&[
         ("tsconfig.json", r#"{"include":["src"]}"#),
@@ -882,7 +941,10 @@ fn rejects_unresolved_vue_files_and_forged_vue_strategies() {
             "src/page.ts",
             "import type { User } from './types';\nexport type Page = User;\n",
         ),
-        ("src/Plain.vue", "<script>\nexport default {}\n</script>\n"),
+        (
+            "src/Plain.vue",
+            "<script>\nexport default { name: getName() }\n</script>\n",
+        ),
     ]);
     let candidates = scan_tsconfig(&root.path().join("tsconfig.json")).unwrap();
     let user = candidates
@@ -910,7 +972,9 @@ fn rejects_unresolved_vue_files_and_forged_vue_strategies() {
             candidate.analysis_limitations.iter().any(|limitation| {
                 limitation.path == "src/Plain.vue"
                     && limitation.reason == "unresolvedVueSfc"
-                    && limitation.message.contains("without lang=\"ts\"")
+                    && limitation
+                        .message
+                        .contains("dependencies cannot be established safely")
             }),
             "{candidate:?}"
         );
@@ -923,7 +987,9 @@ fn rejects_unresolved_vue_files_and_forged_vue_strategies() {
     )
     .expect_err("rejects unresolved vue");
     assert!(
-        error.to_string().contains("lang=\\\"ts\\\"") || error.to_string().contains("lang=\"ts\""),
+        error
+            .to_string()
+            .contains("dependencies cannot be established safely"),
         "{}",
         error
     );
