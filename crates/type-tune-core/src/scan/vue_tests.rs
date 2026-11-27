@@ -100,6 +100,47 @@ fn static_javascript_does_not_hide_alias_or_barrel_vue_dependencies() {
 }
 
 #[test]
+fn javascript_component_template_type_import_blocks_the_project() {
+    let root = write_project(&[
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true},"include":["src"]}"#,
+        ),
+        ("src/types.ts", user_type()),
+        (
+            "src/app.ts",
+            "import type { User } from './types'; export type App = User;",
+        ),
+        (
+            "src/Card.vue",
+            "<template>{{ (/** @type {import('./types').User} */ ({})).id }}</template><script>export default {}</script>",
+        ),
+    ]);
+    let scan = scan_tsconfig_project(&root.path().join("tsconfig.json"), false).unwrap();
+    assert_eq!(scan.analysis_limitations.len(), 1);
+    let limitation = &scan.analysis_limitations[0];
+    assert_eq!(limitation.path, "src/Card.vue");
+    assert!(
+        limitation
+            .message
+            .contains("template, style, or custom-block")
+    );
+    for candidate in scan
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.symbol_name == "User" || candidate.symbol_name == "Other")
+    {
+        assert_eq!(candidate.analysis_limitations, scan.analysis_limitations);
+        let error = plan_extraction_rewrite(
+            std::slice::from_ref(candidate),
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("src/Card.vue"));
+    }
+}
+
+#[test]
 fn counts_script_setup_define_props_and_define_emits_once_per_file() {
     let root = write_project(&[
         ("tsconfig.json", r#"{"include":["src"]}"#),

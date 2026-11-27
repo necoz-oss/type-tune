@@ -438,6 +438,23 @@ fn unresolved_vue_component_still_rejects_every_approved_move() {
 }
 
 #[test]
+fn javascript_template_added_after_review_blocks_apply() {
+    let fixture = Fixture::pair();
+    fixture.write("src/Plain.vue", "<script>export default {}</script>");
+    plan(&fixture);
+    set_json_status(&fixture, &[("A", "apply")]);
+    fixture.write("src/Plain.vue", "<template>{{ (/** @type {import('./alpha/a').A} */ ({})).id }}</template><script>export default {}</script>");
+    let before = snapshot(&fixture.0);
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--accept-unreviewed"]);
+    assert!(!apply.status.success(), "{}", output_text(&apply));
+    assert_unchanged(&fixture, &before);
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("src/Plain.vue")).unwrap(),
+        "<template>{{ (/** @type {import('./alpha/a').A} */ ({})).id }}</template><script>export default {}</script>"
+    );
+}
+
+#[test]
 fn approving_one_import_in_a_shared_component_leaves_the_other_specifier() {
     let fixture = Fixture::pair();
     fixture.write(

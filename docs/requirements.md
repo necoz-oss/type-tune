@@ -30,10 +30,12 @@ project—without deciding on the developer's behalf that every shared type shou
   rewritten.
 - A plain JavaScript Vue script does not block analysis only when it is exactly a static default
   export of an empty object or an object containing only a `name` property with an unescaped string.
-  The parser rejects comments, imports, expressions, other options, and mixed-language scripts in this
-  exception. This syntax cannot refer to a project type through a module, JSDoc, or an expression;
-  all other JavaScript scripts remain unresolved and block moves project-wide. Supported TypeScript
-  scripts in other components continue to contribute referrers and rewrite blockers.
+  The component must also have no template or an empty template without attributes, and no style
+  or custom blocks. Template content and styles can contain expressions or JSDoc type imports, and
+  their compiler options are not analyzed. Comments, imports, expressions, other script options,
+  mixed-language scripts, and other component content remain unresolved and block moves project-wide.
+  A component without a script is also unresolved when it has template, style, or custom-block content.
+  Supported TypeScript scripts in other components continue to contribute referrers and blockers.
 - Exported `type` aliases and `interface` declarations.
 - Existing relative module specifiers, configured path aliases, and simple barrel exports when their
   relationships can be resolved safely.

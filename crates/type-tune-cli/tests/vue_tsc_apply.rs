@@ -32,6 +32,60 @@ div {
 
 #[test]
 #[ignore = "requires the pinned vue and vue-tsc devDependencies; run cargo test --test vue_tsc_apply -- --ignored"]
+fn javascript_template_jsdoc_dependency_blocks_moves() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = RealFixture {
+        root: temp.path().to_path_buf(),
+    };
+    fixture.write("tsconfig.json", r#"{"compilerOptions":{"strict":true,"allowJs":true,"checkJs":true,"noEmit":true,"target":"ESNext","module":"ESNext","moduleResolution":"Bundler","skipLibCheck":true},"include":["src/**/*"]}"#);
+    fixture.write("src/model.ts", "export interface User { id: string }\n");
+    fixture.write(
+        "src/one.ts",
+        "import type { User } from './model'; export type One = User;\n",
+    );
+    fixture.write("src/Card.vue", "<template>{{ (/** @type {import('./model').User} */ ({})).id }}</template><script>export default {}</script>");
+    link_repository_modules(&repo, &fixture.root);
+    let initial = run_vue_tsc(&fixture.root);
+    assert!(initial.status.success(), "{}", output_text(&initial));
+    fixture.write("src/model.ts", "export interface User { other: string }\n");
+    let broken = run_vue_tsc(&fixture.root);
+    assert!(
+        !broken.status.success(),
+        "vue-tsc must validate the template type import"
+    );
+    assert!(
+        output_text(&broken).contains("Property 'id'"),
+        "{}",
+        output_text(&broken)
+    );
+    fixture.write("src/model.ts", "export interface User { id: string }\n");
+    let scan = fixture.run(&[
+        "scan",
+        "--project",
+        "tsconfig.json",
+        "--format",
+        "json",
+        "--min-referrers",
+        "1",
+    ]);
+    assert!(scan.status.success(), "{}", output_text(&scan));
+    let json: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+    assert_eq!(json["analysisLimitations"][0]["path"], "src/Card.vue");
+    let user = json["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["symbolName"] == "User")
+        .unwrap();
+    assert_eq!(user["analysisLimitations"], json["analysisLimitations"]);
+}
+
+#[test]
+#[ignore = "requires the pinned vue and vue-tsc devDependencies; run cargo test --test vue_tsc_apply -- --ignored"]
 fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
     if !cfg!(unix) {
         panic!("the real vue-tsc apply test runs on the Linux CI runner");
@@ -88,8 +142,7 @@ fn apply_keeps_a_vue_specifier_rewrite_when_real_vue_tsc_accepts_it() {
         "import type { User } from './model';\nexport type Two = User;\n",
     );
     fixture.write("src/Card.vue", CARD);
-    let plain =
-        "<template><p>Plain</p></template>\n<script>export default { name: 'Plain' }</script>\n";
+    let plain = "<script>export default { name: 'Plain' }</script>\n";
     fixture.write("src/Plain.vue", plain);
     link_repository_modules(&repo, &fixture.root);
 
