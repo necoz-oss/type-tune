@@ -30,6 +30,8 @@ div {
 </style>
 "#;
 
+const STATIC_JS_COMPONENT: &str = "<template>\r\n<div v-pre class=\"card\"><!-- static text --><p title=\"Greeting\">Hello World!</p></div>\r\n</template>\r\n<script>export default { name: 'Plain' }</script>\r\n";
+
 #[test]
 #[ignore = "requires the pinned vue and vue-tsc devDependencies; run cargo test --test vue_tsc_apply -- --ignored"]
 fn javascript_template_jsdoc_dependency_blocks_moves() {
@@ -259,7 +261,126 @@ fn apply_moves_one_approved_vue_candidate_while_another_stays_ignored() {
         "src/beta/B.vue",
         "<script setup lang=\"ts\">\nimport type { B } from \"./b\";\ndefineProps<{ item: B }>();\n</script>\n<template><p>B</p></template>\n",
     );
+    fixture.write("src/Plain.vue", STATIC_JS_COMPONENT);
     link_repository_modules(&repo, &fixture.root);
+    let scan_args = [
+        "scan",
+        "--project",
+        "tsconfig.json",
+        "--format",
+        "json",
+        "--min-referrers",
+        "2",
+    ];
+    fixture.write("src/Blocked.vue", "<template>{{ (/** @type {import('./alpha/a').A} */ ({})).id }}</template><script>export default {}</script>");
+    let blocked_scan = fixture.run(&scan_args);
+    assert!(
+        blocked_scan.status.success(),
+        "{}",
+        output_text(&blocked_scan)
+    );
+    let blocked_json: serde_json::Value = serde_json::from_slice(&blocked_scan.stdout).unwrap();
+    assert_eq!(
+        blocked_json["analysisLimitations"][0]["path"],
+        "src/Blocked.vue"
+    );
+    assert_eq!(blocked_json["candidates"].as_array().unwrap().len(), 2);
+    assert!(
+        blocked_json["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| !candidate["analysisLimitations"]
+                .as_array()
+                .unwrap()
+                .is_empty())
+    );
+    let blocked_explain = fixture.run(&[
+        "scan",
+        "--project",
+        "tsconfig.json",
+        "--format",
+        "json",
+        "--min-referrers",
+        "2",
+        "--explain",
+    ]);
+    assert!(
+        blocked_explain.status.success(),
+        "{}",
+        output_text(&blocked_explain)
+    );
+    let blocked_explain_json: serde_json::Value =
+        serde_json::from_slice(&blocked_explain.stdout).unwrap();
+    assert_eq!(
+        blocked_explain_json["analysisLimitations"],
+        blocked_json["analysisLimitations"]
+    );
+    let blocked_plan = fixture.run(&[
+        "plan",
+        "--project",
+        "tsconfig.json",
+        "--out",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--min-referrers",
+        "2",
+    ]);
+    assert!(
+        blocked_plan.status.success(),
+        "{}",
+        output_text(&blocked_plan)
+    );
+    select_symbol(&fixture, "A");
+    let blocked_before = project_snapshot(&fixture.root);
+    let blocked_apply = fixture.run(&[
+        "apply",
+        "--plan",
+        "plan.json",
+        "--markdown",
+        "plan.md",
+        "--dry-run",
+    ]);
+    assert!(
+        !blocked_apply.status.success(),
+        "{}",
+        output_text(&blocked_apply)
+    );
+    assert!(output_text(&blocked_apply).contains("src/Blocked.vue"));
+    assert_eq!(project_snapshot(&fixture.root), blocked_before);
+    fs::remove_file(fixture.root.join("src/Blocked.vue")).unwrap();
+    let scan = fixture.run(&scan_args);
+    assert!(scan.status.success(), "{}", output_text(&scan));
+    let scan_json: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+    assert!(scan_json.get("analysisLimitations").is_none());
+    let candidates = scan_json["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.get("analysisLimitations").is_none())
+    );
+    let explain = fixture.run(&[
+        "scan",
+        "--project",
+        "tsconfig.json",
+        "--format",
+        "json",
+        "--min-referrers",
+        "2",
+        "--explain",
+    ]);
+    assert!(explain.status.success(), "{}", output_text(&explain));
+    let explain_json: serde_json::Value = serde_json::from_slice(&explain.stdout).unwrap();
+    assert!(explain_json.get("analysisLimitations").is_none());
+    assert_eq!(explain_json["candidates"], scan_json["candidates"]);
+    let custom_delimiter_check = Command::new("node").current_dir(&fixture.root).args(["-e", r#"const {parse,compileTemplate}=require('vue/compiler-sfc'); const fs=require('fs'); const source=fs.readFileSync('src/Plain.vue','utf8'); const t=parse(source).descriptor.template.content; const r=compileTemplate({source:t,id:'x',filename:'Plain.vue',compilerOptions:{delimiters:['Hello ','!']}}); const plain=compileTemplate({source:t.replace(' v-pre',''),id:'x',filename:'Plain.vue',compilerOptions:{delimiters:['Hello ','!']}}); if(r.errors.length || plain.errors.length || r.code.includes('_ctx.World') || !plain.code.includes('_ctx.World')) process.exit(1);"#]).output().expect("checks Vue custom delimiters");
+    assert!(
+        custom_delimiter_check.status.success(),
+        "{}",
+        output_text(&custom_delimiter_check)
+    );
     let initial_tsc = Command::new(fixture.root.join("node_modules/.bin/tsc"))
         .current_dir(&fixture.root)
         .args([
@@ -301,6 +422,7 @@ fn apply_moves_one_approved_vue_candidate_while_another_stays_ignored() {
     let before_b = fs::read(fixture.root.join("src/beta/B.vue")).unwrap();
     let before_b_source = fs::read(fixture.root.join("src/beta/b.ts")).unwrap();
     let before_use_b = fs::read(fixture.root.join("src/beta/use-b.ts")).unwrap();
+    let before_plain = fs::read(fixture.root.join("src/Plain.vue")).unwrap();
 
     let dry_run = fixture.run(&[
         "apply",
@@ -333,6 +455,10 @@ fn apply_moves_one_approved_vue_candidate_while_another_stays_ignored() {
     assert_eq!(
         fs::read(fixture.root.join("src/beta/use-b.ts")).unwrap(),
         before_use_b
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("src/Plain.vue")).unwrap(),
+        before_plain
     );
     let beta_files = fs::read_dir(fixture.root.join("src/beta"))
         .unwrap()
@@ -676,6 +802,7 @@ fn vue_compiler_validation_isolates_build_info_on_success_and_failure() {
     );
 
     let broken = artifact_fixture(options, true);
+    broken.write("src/Plain.vue", STATIC_JS_COMPONENT);
     broken.write("src/Card.vue", &CARD.replace("user.id", "user.missing"));
     let tsc = validate_artifact_fixture(&broken, false);
     assert!(tsc.status.success(), "{}", output_text(&tsc));
