@@ -247,7 +247,7 @@ fn unresolved_vue_file_blocks_an_otherwise_safe_move_without_writing() {
     );
     fixture.write(
         "src/Plain.vue",
-        "<template><p>label</p></template>\n<script>\nexport default { name: 'Plain' }\n</script>\n",
+        "<template><p>label</p></template>\n<script>\nimport { value } from './model';\nexport default { name: value }\n</script>\n",
     );
     let before = fixture.snapshot();
     let plain_before = fs::read(fixture.0.join("src/Plain.vue")).unwrap();
@@ -273,7 +273,7 @@ fn unresolved_vue_file_blocks_an_otherwise_safe_move_without_writing() {
         limitations[0]["message"]
             .as_str()
             .unwrap()
-            .contains("without lang=\"ts\"")
+            .contains("dependencies cannot be established safely")
     );
     let user = scan_json["candidates"]
         .as_array()
@@ -330,7 +330,10 @@ fn unresolved_vue_file_blocks_an_otherwise_safe_move_without_writing() {
         let rendered = output_text(&text);
         assert!(rendered.contains("Vue analysis limitations:"), "{rendered}");
         assert!(rendered.contains("src/Plain.vue"), "{rendered}");
-        assert!(rendered.contains("without lang=\"ts\""), "{rendered}");
+        assert!(
+            rendered.contains("dependencies cannot be established safely"),
+            "{rendered}"
+        );
     }
 
     let plan = fixture.run(&[

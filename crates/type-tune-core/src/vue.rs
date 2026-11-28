@@ -7,7 +7,7 @@
 use crate::{
     Result,
     model::{ANALYSIS_LIMITATION_UNRESOLVED_VUE, AnalysisLimitation},
-    parser::{ParsedSource, TypeScriptDialect, parse_exact_dialect},
+    parser::{ParsedSource, TypeScriptDialect, is_inert_vue_javascript, parse_exact_dialect},
     source_role::{SourceRole, source_role},
 };
 
@@ -49,6 +49,18 @@ pub(crate) fn parse_analysis_source(path: &str, source: &str) -> Result<SourcePa
     }
     Ok(match extract_vue_typescript(path, source) {
         VueExtract::NoTypeScript => SourceParse::NoTypeScript,
+        VueExtract::JavaScript(start, end, other_content) => {
+            if !is_inert_vue_javascript(&source[start..end])? {
+                SourceParse::Unsupported(limitation(
+                    path,
+                    "it has a JavaScript <script> block whose dependencies cannot be established safely; only a static default export with an optional literal name is supported",
+                ))
+            } else if other_content {
+                SourceParse::Unsupported(content_limitation(path))
+            } else {
+                SourceParse::NoTypeScript
+            }
+        }
         VueExtract::Unsupported(limitation) => SourceParse::Unsupported(limitation),
         VueExtract::TypeScript {
             embedded,
@@ -71,6 +83,7 @@ pub(crate) fn parse_analysis_source(path: &str, source: &str) -> Result<SourcePa
 
 enum VueExtract {
     NoTypeScript,
+    JavaScript(usize, usize, bool),
     Unsupported(AnalysisLimitation),
     TypeScript {
         embedded: String,
@@ -101,6 +114,8 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
     let bytes = source.as_bytes();
     let mut index = if source.starts_with('\u{feff}') { 3 } else { 0 };
     let mut scripts = Vec::new();
+    let mut javascript = None;
+    let mut javascript_other_content = false;
     let mut saw_template = false;
     let mut saw_script = false;
     let mut saw_script_setup = false;
@@ -147,6 +162,13 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
             {
                 return VueExtract::Unsupported(unsupported);
             }
+            if tag.name == "script" && supported_script(&tag, tag.open_end, tag.open_end).is_none()
+            {
+                return VueExtract::Unsupported(limitation(
+                    path,
+                    "it has a self-closing <script> block",
+                ));
+            }
             if tag.name == "template" {
                 if saw_template {
                     return VueExtract::Unsupported(limitation(
@@ -155,6 +177,9 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
                     ));
                 }
                 saw_template = true;
+            }
+            if tag.name != "script" {
+                javascript_other_content = true;
             }
             index = tag.open_end;
             continue;
@@ -185,11 +210,30 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
             }
             if let Some(block) = supported_script(&tag, tag.open_end, content_end) {
                 scripts.push(block);
+            } else {
+                javascript = Some((tag.open_end, content_end));
             }
+        } else if tag.name != "template"
+            || !tag.attributes.is_empty()
+            || !static_vue_template(&source[tag.open_end..content_end])
+        {
+            javascript_other_content = true;
         }
         index = after;
     }
+    if let Some((start, end)) = javascript {
+        if !scripts.is_empty() || saw_script_setup {
+            return VueExtract::Unsupported(limitation(
+                path,
+                "it mixes JavaScript and TypeScript script blocks, which cannot be analyzed safely",
+            ));
+        }
+        return VueExtract::JavaScript(start, end, javascript_other_content);
+    }
     if scripts.is_empty() {
+        if javascript_other_content {
+            return VueExtract::Unsupported(content_limitation(path));
+        }
         return VueExtract::NoTypeScript;
     }
     let dialect = if scripts
@@ -214,6 +258,178 @@ fn extract_vue_typescript(path: &str, source: &str) -> VueExtract {
             .map(|script| (script.content_start, script.content_end))
             .collect(),
     }
+}
+
+// This is deliberately a whitelist, not a general HTML or Vue template parser. Vue allows
+// arbitrary custom interpolation delimiters, so ordinary words are only independent of project
+// bindings when a root v-pre explicitly disables interpolation for the whole subtree.
+fn static_vue_template(source: &str) -> bool {
+    let mut index = 0;
+    let mut tags: Vec<String> = Vec::new();
+    let mut root_count = 0;
+    let mut root_v_pre = false;
+    let bytes = source.as_bytes();
+    while index < bytes.len() {
+        if source[index..].starts_with("<!--") {
+            let Some(end) = find_comment_end(source, index) else {
+                return false;
+            };
+            let comment = &source[index + 4..end - 3];
+            if comment.contains("--") || !comment.chars().all(static_literal_char) {
+                return false;
+            }
+            index = end;
+        } else if bytes[index] == b'<' {
+            if source[index..].starts_with("</") {
+                let Some((name, end)) = parse_end_tag(source, index) else {
+                    return false;
+                };
+                if source.get(index + 2..index + 2 + name.len()) != Some(name.as_str())
+                    || tags.pop().as_deref() != Some(name.as_str())
+                {
+                    return false;
+                }
+                index = end;
+            } else {
+                let Some(tag) = parse_start_tag(source, index) else {
+                    return false;
+                };
+                if tag.self_closing
+                    || !matches!(
+                        tag.name.as_str(),
+                        "div"
+                            | "span"
+                            | "p"
+                            | "section"
+                            | "article"
+                            | "main"
+                            | "header"
+                            | "footer"
+                            | "ul"
+                            | "ol"
+                            | "li"
+                            | "strong"
+                            | "em"
+                    )
+                    || source.get(index + 1..index + 1 + tag.name.len()) != Some(tag.name.as_str())
+                {
+                    return false;
+                }
+                if let Some(parent) = tags.last() {
+                    if matches!(parent.as_str(), "p" | "span" | "strong" | "em")
+                        && !matches!(tag.name.as_str(), "span" | "strong" | "em")
+                    {
+                        return false;
+                    }
+                    if matches!(parent.as_str(), "ul" | "ol") && tag.name != "li" {
+                        return false;
+                    }
+                }
+                if tag.name == "li"
+                    && !tags
+                        .last()
+                        .is_some_and(|parent| matches!(parent.as_str(), "ul" | "ol"))
+                {
+                    return false;
+                }
+                let Some(v_pre) = static_template_attributes(source, index, &tag, tags.is_empty())
+                else {
+                    return false;
+                };
+                if tags.is_empty() {
+                    root_count += 1;
+                    if root_count > 1 {
+                        return false;
+                    }
+                    root_v_pre = v_pre;
+                }
+                tags.push(tag.name);
+                index = tag.open_end;
+            }
+        } else {
+            let next = source[index..]
+                .find('<')
+                .map_or(source.len(), |n| index + n);
+            let text = &source[index..next];
+            let literal = root_v_pre && !tags.is_empty();
+            if !text.chars().all(|ch| {
+                if literal {
+                    static_literal_char(ch)
+                } else {
+                    ch.is_ascii_digit() || ch.is_ascii_whitespace()
+                }
+            }) {
+                return false;
+            }
+            index = next;
+        }
+    }
+    tags.is_empty()
+}
+
+fn static_template_attributes(
+    source: &str,
+    start: usize,
+    tag: &StartTag,
+    root: bool,
+) -> Option<bool> {
+    let bytes = source.as_bytes();
+    let mut index = start + 1 + tag.name.len();
+    let limit = tag.open_end - 1;
+    let mut names = std::collections::BTreeSet::new();
+    let mut v_pre = false;
+    while index < limit {
+        if !bytes[index].is_ascii_whitespace() {
+            return None;
+        }
+        index = skip_whitespace(bytes, index);
+        if index == limit {
+            break;
+        }
+        let name_start = index;
+        while index < limit && is_attribute_char(bytes[index]) {
+            index += 1;
+        }
+        let name = source.get(name_start..index)?;
+        if name.is_empty() || !names.insert(name) {
+            return None;
+        }
+        if name == "v-pre" && root {
+            v_pre = true;
+            continue;
+        }
+        if !matches!(name, "class" | "id" | "title" | "role" | "aria-label") {
+            return None;
+        }
+        index = skip_whitespace(bytes, index);
+        if index >= limit || bytes[index] != b'=' {
+            return None;
+        }
+        index = skip_whitespace(bytes, index + 1);
+        if index >= limit || !matches!(bytes[index], b'\'' | b'"') {
+            return None;
+        }
+        let quote = bytes[index];
+        let value_start = index + 1;
+        index = value_start;
+        while index < limit && bytes[index] != quote {
+            index += 1;
+        }
+        if index == limit
+            || !source
+                .get(value_start..index)?
+                .chars()
+                .all(static_literal_char)
+        {
+            return None;
+        }
+        index += 1;
+    }
+    Some(v_pre)
+}
+
+fn static_literal_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | '-' | '_')
 }
 
 fn note_script(
@@ -265,6 +481,15 @@ fn script_limitation(path: &str, tag: &StartTag) -> Option<AnalysisLimitation> {
         .iter()
         .find_map(|(name, value)| (name == "lang").then_some(value.as_deref()).flatten());
     if matches!(lang, Some("ts" | "tsx")) {
+        return None;
+    }
+    if matches!(lang, None | Some("js"))
+        && !tag
+            .attributes
+            .iter()
+            .any(|(name, value)| name == "lang" && value.is_none())
+        && !tag.attributes.iter().any(|(name, _)| name == "setup")
+    {
         return None;
     }
     let detail = match lang {
@@ -320,6 +545,16 @@ fn limitation(path: &str, detail: &str) -> AnalysisLimitation {
         reason: ANALYSIS_LIMITATION_UNRESOLVED_VUE.to_owned(),
         message: format!(
             "{path} could not be analyzed: {detail}. type-tune did not treat this component as a non-referrer. The component stays unresolved, so this scan cannot safely move any candidate. Correct the unsupported script, or exclude the component from the project and regenerate the plan."
+        ),
+    }
+}
+
+fn content_limitation(path: &str) -> AnalysisLimitation {
+    AnalysisLimitation {
+        path: path.to_owned(),
+        reason: ANALYSIS_LIMITATION_UNRESOLVED_VUE.to_owned(),
+        message: format!(
+            "{path} could not be analyzed: its component has template, style, or custom-block content whose dependencies cannot be established safely. The component stays unresolved, so this scan cannot safely move any candidate. Correct or exclude the component from the project and regenerate the plan."
         ),
     }
 }
@@ -625,6 +860,122 @@ const title = "User";
                 matches!(parsed, SourceParse::Unsupported(_)),
                 "{}",
                 unsupported_message(parsed)
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_only_static_javascript_component_names() {
+        for script in [
+            "export default {}",
+            "export default { name: 'Plain' };",
+            "export default { name: \"日本語\", };",
+        ] {
+            let source = format!("<template></template><script>{script}</script>");
+            assert!(
+                matches!(
+                    parse_analysis_source("Plain.vue", &source).unwrap(),
+                    SourceParse::NoTypeScript
+                ),
+                "{script}"
+            );
+        }
+        for script in [
+            "import { User } from '@/model'; export default {}",
+            "import { User } from '@/barrel'; export default {}",
+            "export { User } from './barrel';",
+            "/** @typedef {import('./model').User} User */ export default {}",
+            "export default /** @type {import('./model').User} */ ({})",
+            "export default { name: require('./model') }",
+            "export default { name: import('./model') }",
+            "export default { name: `Plain` }",
+            "export default { name: '\\xZZ' }",
+            "export default { name: 'Pl\\u0061in' }",
+            "export default { name: value }",
+            "export default { ...options }",
+            "export default { ['name']: 'Plain' }",
+            "export default { name: 'Plain', props: {} }",
+            "export default { /* @typedef {import('./x').X} X */ name: 'Plain' }",
+            "export default { name /* @type {import('./x').X} */: 'Plain' }",
+            "export default { name: 'Plain' }; /* @typedef {import('./x').X} X */",
+            "export default { name: 'Plain'",
+        ] {
+            let source = format!("<script lang=\"js\">{script}</script>");
+            assert!(
+                matches!(
+                    parse_analysis_source("Plain.vue", &source).unwrap(),
+                    SourceParse::Unsupported(_)
+                ),
+                "{script}"
+            );
+        }
+        for source in [
+            "<script setup>export default {}</script>",
+            "<script lang>export default {}</script>",
+            "<script>export default {}</script><script setup lang=\"ts\">const x = 1</script>",
+            "<script src=\"./plain.js\"></script>",
+            "<template>{{ (/** @type {import('./model').User} */ ({})).id }}</template><script>export default {}</script>",
+            "<template><p>Plain</p></template><script>export default {}</script>",
+            "<template src=\"./view.html\"></template><script>export default {}</script>",
+            "<template lang=\"pug\"></template><script>export default {}</script>",
+            "<template>{{ item }}</template><script>export default {}</script>",
+            "<template><p :title=\"item\"></p></template><script>export default {}</script>",
+            "<script>export default {}</script><style>.x { color: v-bind(color) }</style>",
+            "<script>export default {}</script><custom src=\"./content\"></custom>",
+            "<template>{{ (/** @type {import('./model').User} */ ({})).id }}</template>",
+            "<template>{{ (/** @type {import('./model').User} */ ({})).id }}</template><script lang=\"ts\"/>",
+        ] {
+            assert!(
+                matches!(
+                    parse_analysis_source("Plain.vue", source).unwrap(),
+                    SourceParse::Unsupported(_)
+                ),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn recognizes_only_provably_static_template_markup() {
+        for template in [
+            "<div class=\"card\"><p>123</p></div>",
+            "\r\n<div v-pre class=\"card\"><!-- static text --><p title='Greeting'>Hello World!</p></div>\r\n",
+            "<section v-pre><div><span>日本語</span></div></section>",
+        ] {
+            let source = format!(
+                "<template>{template}</template><script>export default {{ name: 'Plain' }}</script>"
+            );
+            assert!(
+                matches!(
+                    parse_analysis_source("Plain.vue", &source).unwrap(),
+                    SourceParse::NoTypeScript
+                ),
+                "{template}"
+            );
+        }
+        for template in [
+            "<div>Hello World!</div>",
+            "<div V-PRE>Hello World!</div>",
+            "<div v-pre=\"true\">Hello World!</div>",
+            "<div v-pre>{{ item }}</div>",
+            "<div v-pre>{{ (/** @type {import('./model').User} */ ({})).id }}</div>",
+            "<div :class=\"item\">123</div>",
+            "<div @click=\"save\">123</div>",
+            "<div v-bind=\"item\">123</div>",
+            "<div v-pre><SomeComponent>text</SomeComponent></div>",
+            "<div v-pre><p>unclosed</div>",
+            "<div v-pre><!-- broken</div>",
+            "<div v-pre class=\"x\" class=\"y\">text</div>",
+            "<div v-pre><p title=\"{{foo}}\">text</p></div>",
+        ] {
+            let source =
+                format!("<template>{template}</template><script>export default {{}}</script>");
+            assert!(
+                matches!(
+                    parse_analysis_source("Plain.vue", &source).unwrap(),
+                    SourceParse::Unsupported(_)
+                ),
+                "{template}"
             );
         }
     }

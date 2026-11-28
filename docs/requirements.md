@@ -28,6 +28,18 @@ project—without deciding on the developer's behalf that every shared type shou
   `<script setup lang="tsx">`. Referrers in those blocks can receive a specifier-only import
   update. Templates, styles, and other SFC content are not analyzed as TypeScript and are not
   rewritten.
+- A plain JavaScript Vue script does not block analysis only when it is exactly a static default
+  export of an empty object or an object containing only a `name` property with an unescaped string.
+  It may have one template without attributes containing a single, well-nested tree of selected
+  native HTML elements with quoted static `class`, `id`, `title`, `role`, or `aria-label` attributes.
+  Template text must be ASCII digits and whitespace, unless the root element has `v-pre`, which
+  makes restricted literal text inert under Vue's custom interpolation delimiters. Plain words without
+  `v-pre` remain unresolved because the project's template compiler delimiters are not known.
+  The classifier also accepts restricted HTML comments; directives, components, external templates,
+  style or custom blocks, and ambiguous markup remain unresolved. Imports, JSDoc, expressions,
+  other script options, and mixed-language scripts still block moves project-wide. Components without
+  scripts follow the same template restrictions.
+  Supported TypeScript scripts in other components continue to contribute referrers and blockers.
 - Exported `type` aliases and `interface` declarations.
 - Existing relative module specifiers, configured path aliases, and simple barrel exports when their
   relationships can be resolved safely.

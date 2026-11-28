@@ -415,7 +415,7 @@ fn unresolved_vue_component_still_rejects_every_approved_move() {
     let fixture = Fixture::pair();
     fixture.write(
         "src/Plain.vue",
-        "<template><p>plain</p></template>\n<script>\nexport default {}\n</script>\n",
+        "<template><p>plain</p></template>\n<script>\nexport default { name: getName() }\n</script>\n",
     );
     plan(&fixture);
     set_json_status(&fixture, &[("A", "apply")]);
@@ -424,7 +424,10 @@ fn unresolved_vue_component_still_rejects_every_approved_move() {
     assert!(!apply.status.success(), "{}", output_text(&apply));
     let text = output_text(&apply);
     assert!(text.contains("src/Plain.vue"), "{text}");
-    assert!(text.contains("without lang=\"ts\""), "{text}");
+    assert!(
+        text.contains("dependencies cannot be established safely"),
+        "{text}"
+    );
     assert!(text.contains("Correct the unsupported script"), "{text}");
     assert!(text.contains("exclude the component"), "{text}");
     assert!(
@@ -432,6 +435,23 @@ fn unresolved_vue_component_still_rejects_every_approved_move() {
         "{text}"
     );
     assert_unchanged(&fixture, &before);
+}
+
+#[test]
+fn javascript_template_added_after_review_blocks_apply() {
+    let fixture = Fixture::pair();
+    fixture.write("src/Plain.vue", "<script>export default {}</script>");
+    plan(&fixture);
+    set_json_status(&fixture, &[("A", "apply")]);
+    fixture.write("src/Plain.vue", "<template>{{ (/** @type {import('./alpha/a').A} */ ({})).id }}</template><script>export default {}</script>");
+    let before = snapshot(&fixture.0);
+    let apply = fixture.run(&["apply", "--plan", "plan.json", "--accept-unreviewed"]);
+    assert!(!apply.status.success(), "{}", output_text(&apply));
+    assert_unchanged(&fixture, &before);
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("src/Plain.vue")).unwrap(),
+        "<template>{{ (/** @type {import('./alpha/a').A} */ ({})).id }}</template><script>export default {}</script>"
+    );
 }
 
 #[test]
